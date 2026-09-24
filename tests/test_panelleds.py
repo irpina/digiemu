@@ -104,6 +104,44 @@ class Seed(unittest.TestCase):
         self.assertIsNone(panelleds.seed(self.ram((1, 0, 0, 0)), '1.53'))
         self.assertIsNone(panelleds.seed(self.ram(slot_value=41), '1.53'))
 
+    def test_the_digitakt_names_itself_or_not(self):
+        self.assertIsNotNone(panelleds.seed(self.ram(), '1.53', 'Digitakt'))
+        # Another product never borrows the Digitakt's bare-version table.
+        self.assertIsNone(panelleds.seed(self.ram(), '1.53', 'Digitone'))
+
+
+class DigitoneSeed(unittest.TestCase):
+    """The Digitone's panel has 72 LEDs in 18 selector groups."""
+
+    def ram(self):
+        where = panelleds.SEED[('Digitone', '1.43')]
+        mem = {}
+        cache = bytearray([0xFF]) * ((where['leds'] + 1) * 4)
+        cache[(70 + 1) * 4 + 1] = RED                  # LED 70, slot 1
+        mem[where['slot_cache']] = bytes(cache)
+        sel = bytearray(where['groups'])
+        sel[70 >> 2] = 0b01 << ((70 & 3) * 2)          # LED 70 -> slot 1
+        mem[where['selectors']] = bytes(sel)
+        pal = bytearray(panelleds.PALETTE * 4)
+        pal[RED * 4:RED * 4 + 4] = bytes((0, 31, 0, 0))
+        mem[where['palette']] = bytes(pal)
+        return lambda addr, n: mem[addr][:n]
+
+    def test_seeds_past_the_digitakts_44(self):
+        st = panelleds.seed(self.ram(), '1.43', 'Digitone')
+        self.assertEqual((st.leds, st.groups), (72, 18))
+        self.assertEqual(st.colours()[70], (255, 0, 0))
+
+    def test_a_fresh_state_is_sized_for_the_product(self):
+        st = panelleds.new_state('1.43', 'Digitone')
+        self.assertEqual((st.leds, st.groups), (72, 18))
+        st.feed(bytes([0x2F, 0x01]))                   # group 15's selectors
+        self.assertEqual(st.sel[15], 0x01)
+        dt = panelleds.new_state('1.53', 'Digitakt')
+        self.assertEqual((dt.leds, dt.groups), (44, 11))
+        dt.feed(bytes([0x2F, 0x01]))                   # past its 11 groups
+        self.assertEqual(dt.sel, [None] * 11)
+
 
 class DeviceFile(unittest.TestCase):
     def test_digitakt_led_map(self):
@@ -115,6 +153,16 @@ class DeviceFile(unittest.TestCase):
         self.assertEqual(dev.labels[dev.leds[27]], 'NO')
         self.assertEqual(dev.page_leds, (43, 42, 41, 40))
         self.assertFalse(set(dev.page_leds) & set(dev.leds))
+
+    def test_digitone_led_map(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dev = device.load(os.path.join(root, 'devices', 'digitone.toml'))
+        self.assertEqual([dev.leds[i] for i in range(16)], list(range(26, 42)))
+        self.assertEqual(dev.labels[dev.leds[39]], 'PLAY')
+        self.assertEqual(dev.labels[dev.leds[46]], 'T1')
+        self.assertEqual(dev.page_leds, (45, 44, 43, 42))
+        self.assertFalse(set(dev.page_leds) & set(dev.leds))
+        self.assertTrue(all(led < 72 for led in dev.leds))
         # every mapped code is a key the device can press
         for code in dev.leds.values():
             self.assertIsNotNone(dev.wire_for(code), code)

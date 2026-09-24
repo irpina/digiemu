@@ -78,9 +78,23 @@ class Device:
                  exceptions, groups, path=None, intro_channels=(),
                  intro_unblocks_frame_sem=True, post_intro_ips=0,
                  labels=None, leds=None, page_leds=(), audio=None,
-                 sysex_id=None, os_stream_id=None):
+                 sysex_id=None, os_stream_id=None, card_ekfs=True,
+                 panel_kind=None, encoder_counts=1):
         self.name = name
         self.short = short
+        # [card] ekfs: whether the +Drive carries an ekFS sample volume that
+        # has to be formatted before the cold boot (emu/bootstrap.py). The
+        # Digitone has no sample engine and no such volume: its first boot
+        # initialises a blank card by itself.
+        self.card_ekfs = bool(card_ekfs)
+        # [panel] kind: which front panel window draws this product
+        # (emu/dnpanel.py for "digitone"). None means the Digitakt's.
+        self.panel_kind = panel_kind
+        # [panel] encoder_counts: wire counts per detent a window sends. The
+        # mk1 panel drivers have a dead zone (see devices/digitone.toml), so
+        # one count per mouse-wheel notch needed ~16 notches before anything
+        # moved.
+        self.encoder_counts = int(encoder_counts)
         # The SysEx framing ids of this product's OS files: byte 4 (the
         # transport/device id) and byte 8 (the OS-stream id the bootstrap
         # checks -- a mismatch is its 'Incompatible OS'). None when the
@@ -214,7 +228,27 @@ def load(path):
         audio=_audio(raw.get('audio'), path),
         sysex_id=_sysex_byte(dev, 'sysex_id', path),
         os_stream_id=_sysex_byte(dev, 'os_stream_id', path),
+        card_ekfs=_bool(raw.get('card', {}), 'ekfs', True, path),
+        panel_kind=panel.get('kind'),
+        encoder_counts=_counts(panel, path),
     )
+
+
+def _counts(panel, where):
+    value = panel.get('encoder_counts', 1)
+    if isinstance(value, bool) or not isinstance(value, int) \
+            or not 1 <= value <= 16:
+        raise DeviceError('%s: [panel] encoder_counts must be 1..16, got %r'
+                          % (where, value))
+    return value
+
+
+def _bool(table, key, default, where):
+    value = table.get(key, default)
+    if not isinstance(value, bool):
+        raise DeviceError('%s: %s must be true or false, got %r'
+                          % (where, key, value))
+    return value
 
 
 def _sysex_byte(table, key, where):

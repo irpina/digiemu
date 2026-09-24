@@ -304,6 +304,11 @@ def _validate_manifest(saved, current):
 
 def save(machine, path, extra=None, components=None, manifest=None):
     """Dump guest state plus optional named host components and build manifest."""
+    # Writes a hook made to a page the guest had not touched yet
+    # (Machine.poke) belong in the snapshot too.
+    flush = getattr(machine, 'flush_pending', None)
+    if flush is not None:
+        flush()
     pages = {}
     for base in sorted(machine.mapped):
         data = bytes(machine.uc.mem_read(base, PAGE))

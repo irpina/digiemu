@@ -39,6 +39,12 @@ ALLOWED_NONE = {
     # degrades to running the guest's own copy loop, which is correct but
     # slower. Never affects what the firmware computes.
     'px_copy': 'optional accelerator; absence only costs speed',
+    # The Digitone's second-CPU boot task (emu/dsplink.py). Every other
+    # product has no such task, and unresolved is what keeps the model off.
+    'dsp_boot_task': 'Digitone only: no DSP boot task on this image',
+    'dsp_request_sem': 'Digitone only: follows dsp_boot_task',
+    'dsp_status': 'Digitone only: follows dsp_boot_task',
+    '_ssi0_dma_force_tail_dn': 'Digitone only: its transmit ISR tail',
 }
 
 # A `verify` shorter than this is weak evidence on its own: a handful of

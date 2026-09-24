@@ -1256,6 +1256,94 @@ class FirstLineTest(unittest.TestCase):
         self.assertEqual(_first_line('a' * 200, limit=10), 'aaaaaaa...')
 
 
+@NEEDS_GUI
+class EncoderScaleTest(Quiet):
+    """_drain_input sends each detent as [panel] encoder_counts wire counts,
+    clamped to what one encoder message carries."""
+
+    def drain(self, *events, counts=4):
+        from emu import gui, panelin
+        emu = types.SimpleNamespace(
+            held=object(), _dwell_ms=0, inbox=deque(events), stats={'instrs': 0},
+            device=types.SimpleNamespace(encoder_channel=lambda code: code - 1,
+                                         encoder_counts=counts))
+        sent = []
+        with mock.patch.object(panelin, 'feed',
+                               lambda m, prof, data: sent.append(data) or 0x1234):
+            pc = gui.Emulator._drain_input(emu, None, None, 0x40)
+        return pc, sent, panelin
+
+    def test_a_detent_is_four_counts(self):
+        pc, sent, panelin = self.drain(('encoder', 1, 3), ('encoder', 9, -1))
+        self.assertEqual(pc, 0x1234)
+        self.assertEqual(sent, [panelin.encode_encoder(0, 12)
+                                + panelin.encode_encoder(8, -4)])
+
+    def test_a_fast_spin_is_clamped(self):
+        _pc, sent, panelin = self.drain(('encoder', 2, 40), ('encoder', 2, -40))
+        self.assertEqual(sent, [panelin.encode_encoder(1, 127)
+                                + panelin.encode_encoder(1, -127)])
+
+    def test_one_count_per_detent_is_unchanged(self):
+        _pc, sent, panelin = self.drain(('encoder', 1, 3), counts=1)
+        self.assertEqual(sent, [panelin.encode_encoder(0, 3)])
+
+
+@NEEDS_GUI
+class DigitoneLayoutTest(unittest.TestCase):
+    """emu/dnpanel.py draws every key devices/digitone.toml names, on the
+    panel, clear of the screen and of each other."""
+
+    def setUp(self):
+        from emu import device, dnpanel, dtpanel, gui
+        self.dn, self.dt, self.gui = dnpanel, dtpanel, gui
+        self.dev = device.load(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'devices', 'digitone.toml'))
+
+    def boxes(self):
+        cls = self.dn.DigitonePanel
+        out = {'button ' + k: (x, y, x + w, y + h)
+               for k, (x, y, w, h, _sub, _tint) in cls.BUTTONS.items()}
+        out.update({'encoder ' + k: (x - r, y - r, x + r, y + r)
+                    for k, (x, y, r) in cls.ENCODERS.items()})
+        sx, sy = self.dt.SCREEN_X, self.dt.SCREEN_Y
+        out['screen'] = (sx, sy, sx + self.gui.W * self.dt.SCALE,
+                         sy + self.gui.H * self.dt.SCALE)
+        return out
+
+    def test_every_measured_key_has_a_place(self):
+        cls = self.dn.DigitonePanel
+        missing = set(self.dev.labels.values()) - set(cls.BUTTONS)
+        self.assertEqual(missing, set())
+        self.assertIn('PAGE', cls.BUTTONS)          # the page LEDs hang off it
+
+    def test_nine_encoders_including_level_data(self):
+        cls = self.dn.DigitonePanel
+        self.assertEqual(len(cls.ENCODERS), self.dev.encoders)
+        self.assertEqual(sorted(cls.ENCODERS),
+                         sorted('ABCDEFGH') + ['LEVEL/DATA'])
+
+    def test_nothing_overlaps_or_leaves_the_panel(self):
+        cls = self.dn.DigitonePanel
+        boxes = sorted(self.boxes().items())
+        for name, (x0, y0, x1, y1) in boxes:
+            self.assertTrue(0 <= x0 < x1 <= cls.PANEL_W
+                            and 70 <= y0 < y1 <= cls.PANEL_H, name)
+        for i, (a, ba) in enumerate(boxes):
+            for b, bb in boxes[i + 1:]:
+                apart = (ba[2] <= bb[0] or bb[2] <= ba[0]
+                         or ba[3] <= bb[1] or bb[3] <= ba[1])
+                self.assertTrue(apart, '%s overlaps %s' % (a, b))
+
+    def test_it_is_its_own_product_with_no_sample_loader(self):
+        cls = self.dn.DigitonePanel
+        self.assertTrue(issubclass(cls, self.dt.DigitaktPanel))
+        self.assertEqual(cls.PRODUCT, 'Digitone')
+        self.assertIn('Digitone', cls.TITLE)
+        self.assertFalse(cls.SAMPLES)
+        self.assertTrue(self.dt.DigitaktPanel.SAMPLES)
+
+
 class GlobEscapeTest(unittest.TestCase):
     """A '[' in the app's folder must not hide the sections."""
 

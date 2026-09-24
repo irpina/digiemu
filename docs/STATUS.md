@@ -1,11 +1,14 @@
 # Status
 
-Where digiemu stands, and what is left to do. Updated 2026-09-23. The dated
+Where digiemu stands, and what is left to do. Updated 2026-09-24. The dated
 session handoffs in [history/](history/README.md) hold the detail behind each
 line; where one disagrees with this page, this page is newer.
 
 Target firmware: Digitakt mk1 OS 1.53, SHA-256
-`9bdd44bb6102fb25c143cfab97bc92b7a89c463f795d3112dce89771e29bcc92`.
+`9bdd44bb6102fb25c143cfab97bc92b7a89c463f795d3112dce89771e29bcc92`, and
+Digitone mk1 OS 1.43, SHA-256
+`c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`
+([DIGITONE-MK1.md](../DIGITONE-MK1.md)).
 
 ## What works
 
@@ -28,6 +31,12 @@ Target firmware: Digitakt mk1 OS 1.53, SHA-256
   version from the file's header, sets up in about 25 seconds, and saves
   the session when the panel closes. LOAD SAMPLES puts WAV files on the
   +Drive, and `digiemu-console.exe` does all of it without a window.
+- **The Digitone (mk1).** Boots to its live UI, first run in 25 seconds in
+  the app (a blank +Drive, which the firmware's first boot initialises), its
+  own window (`emu/dnpanel.py`) with every key, encoder and key LED, and
+  live audio at 100% of real time: the second CPU runs the firmware's own FM
+  voice code (`emu/dsplink.py`) on a thread of its own, one render per
+  audio block, about 80% of a second core.
 - **Tests and CI.** Every test module runs on its own
   (`tools/ci/run-tests.sh`). None uses firmware bytes, and CI runs them
   with a content guard on every pull request.
@@ -53,9 +62,16 @@ Target firmware: Digitakt mk1 OS 1.53, SHA-256
   over multi-hour sessions has not been measured.
 - **The app is unsigned**, and its Control Flow Guard flag is cleared,
   because Unicorn's `longjmp` fails under it.
-- **Other devices.** Digitone mk1 is recognised but not supported. The
-  Digitakt II and Digitone II paths from upstream digikit still work as
-  upstream left them.
+- **Digitone Keys.** The OS file is shared, but digiemu runs it as a plain
+  Digitone (boot argument bit 19 clear): no keyboard, wheels or Keys-only
+  keys.
+- **Digitone details.** Two key LEDs (PAGE, FUNC) come from the firmware's
+  table and have not been seen lit. MIDI, audio in and the DSP's FPGA are
+  not modelled beyond boot. Live DSP renders run on their own thread, so a
+  live session is not instruction-for-instruction repeatable; batch runs
+  are.
+- **Other devices.** The Digitakt II and Digitone II paths from upstream
+  digikit still work as upstream left them.
 
 ## Open work, in order
 
@@ -84,6 +100,9 @@ Target firmware: Digitakt mk1 OS 1.53, SHA-256
 8. **More headroom,** if a slower PC needs it: move the SSI half-buffer
    batch and the timer register reads into native code (Python is about 30%
    of a live run), then the MAC helper (about 20%).
-9. **Digitone mk1:** a device file, a panel map, and a first boot.
+9. **Digitone:** test on the slow laptop (it needs a second core for the
+   DSP); the Digitone Keys (bit 19, the keyboard on panel tags 5/6, the
+   wheels on the ADC, codes 55–72); a panel sweep that sees the PAGE and
+   FUNC LEDs lit.
 10. **Upstream:** digikit would benefit from the card-identification (CID)
     fix, the INTC verification, and the ekFS index and sample format.

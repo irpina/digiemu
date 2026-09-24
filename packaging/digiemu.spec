@@ -201,7 +201,7 @@ def _version(fname):
         ffi=vi.FixedFileInfo(filevers=VERSION_TUPLE, prodvers=VERSION_TUPLE),
         kids=[
             vi.StringFileInfo([vi.StringTable('040904B0', [
-                vi.StringStruct('FileDescription', 'digiemu - Digitakt emulator (unofficial)'),
+                vi.StringStruct('FileDescription', 'digiemu - Digitakt and Digitone emulator (unofficial)'),
                 vi.StringStruct('ProductName', 'digiemu'),
                 vi.StringStruct('FileVersion', VERSION),
                 vi.StringStruct('ProductVersion', VERSION),

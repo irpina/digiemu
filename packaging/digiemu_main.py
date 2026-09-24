@@ -49,6 +49,7 @@ NATIVE_OPTIONS = 0x7            # NATIVE_RTE | NO_MEM_EXIT | NO_HOOK_PC_SYNC
 # spelled out here because bundle_guard is a build tool, not in the bundle.
 IMPORTS = (
     'emu.portable', 'emu.bootstrap', 'emu.release', 'emu.dtpanel', 'emu.gui',
+    'emu.dnpanel', 'emu.dsplink',
     'emu.ekfsformat', 'emu.uiresume', 'emu.checkpoint', 'emu.extract',
     'emu.snapshot', 'emu.checkpointver', 'emu.sparse', 'emu.samples', 'emu.esdhc',
     'emu.run', 'emu.config',

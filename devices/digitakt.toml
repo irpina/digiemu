@@ -55,6 +55,13 @@ mounted_u32 = 0x420edc50     # must be 1: the ekFS sample volume is mounted
 [panel]
 linear_channels = 0
 encoders = 9
+# Wire counts per detent the window sends. The panel driver has a dead zone
+# (read on the Digitone, whose driver is this one's twin): an idle knob's
+# state rests at 48, each count takes 3 off it, and nothing steps until it
+# is at or below 24; for some parameters every step adds 48 back. Measured:
+# at 1 a knob needed ~16 notches before its value moved, and at 4 it steps
+# about once a notch.
+encoder_counts = 4
 # The four pattern-page LEDs, page 1 first: LED ids from the firmware's RAM
 # table at [0x4060F620] (1-based there). Page 1 is dim at idle and bright
 # while playing or recording (measured).

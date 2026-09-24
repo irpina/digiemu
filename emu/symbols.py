@@ -652,9 +652,16 @@ SYMBOLS = [
     ('sem_pend', AnyOf(Sig(H(24, '4-7,14-17,20-23', '8:27004a91', '79d3b45690867b71bfafcf3a40f3fdb8'),
                            hi=DATA_HI),
                        Fixed(0x400016fe, verify=H(8, '', '2:000440c0', 'ea58b4bdeb69c932327394de1122462c'))), True),
+    # The third alternative is the mk1 family's: one masked 12-byte window
+    # that matches exactly once in Digitakt mk1 1.53 (0x4000168a) and in
+    # Digitone mk1 1.43 (0x400017ea, the RTOS there sits +0x160 from the
+    # Digitakt's), where the Digitakt II signature runs on into code that
+    # differs.
     ('pend_b', AnyOf(Sig(H(24, '4-7', '9:0020116f', '6348228ed02ffd938343f88d9cab5754'),
                          hi=DATA_HI),
-                     Fixed(0x4000168a, verify=H(8, '', '2:000440c1', '97c23ca96d2662aabfb7c2d69961bc03'))), False),
+                     Fixed(0x4000168a, verify=H(8, '', '2:000440c1', '97c23ca96d2662aabfb7c2d69961bc03')),
+                     Sig(H(12, '4-7', '8:27002011', '8ec05d55cb0125895e710e92d929f515'),
+                         hi=DATA_HI)), False),
 
     # The two semaphore POST primitives, the counterparts of sem_pend/pend_b.
     # emu/semscan.py finds every call site with a literal semaphore operand to
@@ -831,7 +838,13 @@ SYMBOLS = [
     ('intro_done', AnyOf(Sig(H(48, '0-11,30-33,38-41', '12:141a33c0', '4783b8ef4d4e8bfe4ed789770769b354'),
                              hi=DATA_HI),
                          Fixed(0x4006cb92,
-                               verify=H(24, '', '5:988bec42', '336ee100621edc97e64e56a82190bf97'))), False),
+                               verify=H(24, '', '5:988bec42', '336ee100621edc97e64e56a82190bf97')),
+                         # Digitone mk1 1.43 (0x40091aea): the Digitakt mk1
+                         # sequence with d0/d1 where that has d1/d4. Masked:
+                         # the pea and lea operands and the high half of the
+                         # jsr's; anchored on the PIT3-off store.
+                         Sig(H(34, '4-7,14-17,32-33', '18:33c0fc08', 'db80fceb41c3835b0d3fa82a3c57244d'))),
+     False),
 
     # The `pea` operand at intro_done+4 is the frame semaphore's MUTEX
     # field, 8 bytes into the semaphore struct -- the same idiom as
@@ -852,7 +865,12 @@ SYMBOLS = [
     ('intro_pit3_isr', AnyOf(SigWhere(H(44, '8-11,20-23,30-33', '12:c0007204', '244d55b2732e06108e8749a4e73c8ec4'),
                                       at=20, equals='frame_sem', hi=DATA_HI),
                              Fixed(0x4006c154,
-                                   verify=H(28, '', '21:988be480', 'c5a50aab98be1e903b9f9db1a3681643'))), False),
+                                   verify=H(28, '', '21:988be480', 'c5a50aab98be1e903b9f9db1a3681643')),
+                             # The mk1 family: matches once in Digitakt mk1
+                             # (0x4006c154) and once in Digitone mk1
+                             # (0x40090cdc), and still has to post frame_sem.
+                             SigWhere(H(48, '8-11,20-23,30-33', '44:4e732f0a', '611cb187032470b929fe76750f62aead'),
+                                      at=20, equals='frame_sem', hi=DATA_HI)), False),
 
     # ----------------------------------------------------------------
     # The pend sites longrun.py must NOT force-satisfy: each is a wait
@@ -880,7 +898,12 @@ SYMBOLS = [
     # what frees the CPU once the intro is over.
     ('intro_park', AnyOf(Sig(H(32, '14-17', '5:0a2f3c40', 'a3fb180d91e68e6d1919f16bca20194f')),
                          Fixed(0x4006cbc0,
-                               verify=H(8, '', '1:8f60f442', '1e72e6b3db9d423b8c25de453d77ef55'))), False),
+                               verify=H(8, '', '1:8f60f442', '1e72e6b3db9d423b8c25de453d77ef55')),
+                         # The mk1 family (Digitakt 0x4006cbc0, Digitone
+                         # 0x40091b18): addq, bra back, then the next
+                         # routine's opening movem, frame_sem's pea masked.
+                         Sig(H(12, '4-7', '8:fb7e0000', '8caf0df1fae0bfc2fde00d96224031dc'),
+                             hi=DATA_HI)), False),
     ('display_wait', Sig(H(32, '6-9,18-21', '2:60ec4879', '086a090b2539290a4a00499dde6f0fce')), False),
 
     # The display module's own PIT3 ISR (0x40125f3c) posts the progress
@@ -1029,7 +1052,14 @@ SYMBOLS = [
     # it returns (0x421cca40) is base+0x30, and both give base 0x421cca10.
     ('sd_bringup', AnyOf(Sig(H(26, '8-11,14-17,20-23', '4:48d70c3c', '9a560a1c79cb047d17ab0057a63c2873'),
                              hi=DATA_HI),
-                         Fixed(0x400e1f9e, verify=H(14, '', '6:0c3c42a7', 'bae444c67983c27c743bf364f86dcda4'))), False),
+                         Fixed(0x400e1f9e, verify=H(14, '', '6:0c3c42a7', 'bae444c67983c27c743bf364f86dcda4')),
+                         # The mk1 family: 20 bytes, the jsr target and the
+                         # pea operand masked, once in Digitakt mk1
+                         # (0x400e1f9e) and once in Digitone mk1 (0x400f4e12;
+                         # driver base 0x419c92a8, whose +0x4c is the
+                         # semaphore its command primitive pends on).
+                         Sig(H(20, '8-11,14-17', '4:48d70c3c', 'ff139347ed973dc4b2fa203ffe2389a2'),
+                             hi=DATA_HI)), False),
     ('sd_flag', Operand('sd_bringup', at=28), False),
     ('sd_status', Offset('sd_flag', 0x30), False),
 
@@ -1113,7 +1143,16 @@ SYMBOLS = [
     # is unsafe.  Anchor on the MMIO/OR/tail sequence, then expose the RTE.
     ('_ssi0_dma_force_tail',
      Sig(H(18, '4-7', '8:4cd70103', '96193612aafb1553b51f8a3f22bf71b4')), False),
-    ('ssi0_dma_force_rte', Offset('_ssi0_dma_force_tail', 0x10), False),
+    # The Digitone mk1's transmit ISR (0x4009c2e4 in 1.43) toggles its DSP's
+    # block clock before forcing source 63, and forces it with an absolute
+    # `or.l d0,$fc04c010.l`, so its tail is laid out differently: anchored on
+    # the `jsr` to the toggle (target masked), whose absence is what tells it
+    # from the test-mode engine's copy of the same tail. Its rte is 0x1a in.
+    ('_ssi0_dma_force_tail_dn',
+     Sig(H(28, '2-5', '14:fc04c010', '0930956b0ddc8be99bc4f995ee851354')), False),
+    ('ssi0_dma_force_rte', AnyOf(Offset('_ssi0_dma_force_tail', 0x10),
+                                 Offset('_ssi0_dma_force_tail_dn', 0x1a)),
+     False),
 
     # The factory test mode's own names for the front-panel controls, which
     # is the firmware telling us what each control code means rather than us
@@ -1208,7 +1247,11 @@ SYMBOLS = [
                          Fixed(0x400cab78, verify=H(8, '', '4:4a0067c2', '9704d6e7b01881711b1075d0d3f90e77'))), False),
     ('view_activate', AnyOf(Sig(H(24, '0-3,18-21', '12:0034282f', 'f0e8448da4213f700b14fd507b4037e0'),
                                 hi=DATA_HI),
-                            Fixed(0x400c9a9e, verify=H(8, '', '3:efffd048', '70a587b8ba99951d821e4142113f1a0a'))), False),
+                            Fixed(0x400c9a9e, verify=H(8, '', '3:efffd048', '70a587b8ba99951d821e4142113f1a0a')),
+                            # The mk1 family (Digitakt 0x400c9a9e, Digitone
+                            # 0x400e53b6).
+                            Sig(H(20, '0-3', '15:2f003847', 'e5e1a14fada3568f7a603a9131a38e8c'),
+                                hi=DATA_HI)), False),
     ('view_close', AnyOf(Sig(H(24, '', '19:00661870', 'e0f261d2517fa5b2abe8c1479a3e9f30'),
                              hi=DATA_HI),
                          Fixed(0x400c98b6, verify=H(8, '', '3:6f000848', '8d9ca5430657d8266ae2fee9b94a0933'))), False),
@@ -1239,6 +1282,20 @@ SYMBOLS = [
                           Sig(H(18, '2-5,8-11', '12:6f0000d8', 'b055c3740bb6e46caea252fe9362321b'),
                               hi=DATA_HI)), False),
     ('ui_tick_counter',  Operand('ui_tick_inc', at=2), False),
+
+    # ----------------------------------------------------------------
+    # The Digitone's second CPU ("DSP" in its own strings; a second ColdFire,
+    # not a SHARC). dsp_boot_task is the main CPU's task that uploads the
+    # DSP's code and releases its reset (0x4008d56c in Digitone mk1 1.43; see
+    # emu/dsplink.py). It loops on dsp_request_sem, whose `pea` operand sits
+    # 0x3c bytes in; dsp_status (0 in progress, 1 boot failure, 2 running) is the
+    # word the task clears 0x9e bytes in. Only the Digitone has this task, so
+    # on every other image all three stay unresolved and nothing is modelled.
+    # ----------------------------------------------------------------
+    ('dsp_boot_task', Sig(H(48, '20-23,28-35,42-45', '1:ef72104f', '14585ecd817bd684aa190b0a6154acc6'),
+                          hi=DATA_HI), False),
+    ('dsp_request_sem', Operand('dsp_boot_task', at=0x3c), False),
+    ('dsp_status', Operand('dsp_boot_task', at=0x9e), False),
 
     # Every `bra.b $self` (opcode 60FE) -- the RTOS idiom for "nothing to do,
     # wait for the scheduler's timer tick to preempt me". dspboot.py already

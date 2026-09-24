@@ -3738,3 +3738,200 @@ The remaining ~130,000 uncovered bytes are mostly gaps whose first bytes are
 alignment or tail data rather than the entry, plus a repeated non-standard
 prologue idiom (`8f2f 0a2f 0224` after a varying first word) that the three
 patterns above do not match. **[O]**
+
+## Digitone (mk1) 1.43: the second CPU, and the port **[V][C][D][O]**
+
+`Digitone_and_Digitone_Keys_OS1.43.syx`, SHA-256 `c5a54cc0...`:
+
+- section 3 is the main CPU, at `0x40000400`;
+- section 7 is the second ColdFire, which the firmware's strings call the
+  DSP;
+- section 6 is the DSP's serial-boot loader.
+
+Every claim below marked **[V]** was read from the image bytes by a second
+agent on 2026-09-24, using static disassembly, with EMAC and `mvz`/`mvs`
+decoded by hand. The emulator (`emu/dsplink.py`,
+[DIGITONE-MK1.md](../DIGITONE-MK1.md)) runs the same code to live sound.
+
+### Loading and the idle loop **[V]**
+
+- Section 6 reads section 7 over SPI to `0x40000400`
+  (`move.l #$40000400,-(a7)` / `jsr $80000314`). It then jumps through the
+  image's first long (`movea.l $40000400.l,a0` ... `jmp (a0)` at
+  `0x80000554`), which is `0x40000b92`.
+- `0x40000b90` is `bra.b *`, the idle loop. `0x40000b92` starts with
+  `movea.l #$48000000,a7`.
+- The absolute pointers inside section 7 line up only with base
+  `0x40000400`. A scratch disassembler that mapped it at `0x40000000` was
+  wrong by `0x400`.
+
+### Vector 96 is reached through a trampoline **[V][C]**
+
+- VBR is `0x40000000`: `movec d0,vbr` at `0x40000a7c`, loaded from a long
+  at `0x40006794` that nothing writes.
+- A loop at `0x40000a5c` fills all 256 vectors with `0x40000404` (`rte`).
+- Vector 96 (offset `0x180`) is written twice:
+  1. `0x40000ab8` stores `0x40000406`, a handshake-phase handler. It clears
+     the DTIM0 flag and sets the restart flag `0x400166e0`, so an edge
+     during the handshake sends the code back to `0x40000aec` to redo the
+     FPGA setup.
+  2. `0x40000b8c` stores a pointer to a 10-byte trampoline built on the DSP
+     stack at `0x40000a38`–`a56`: `movea.l #&base,a1; jmp $400008fa`.
+- **Correction:** this session's first write-up said vector 96 *is*
+  `0x400008fa`.
+- The emulator does not depend on the difference: it raises the vector
+  and runs whatever the DSP installed.
+
+### The render **[V]**
+
+- `0x400008fa` copies the parameters: `pea $3a0.w; clr.l -(a7);
+  pea $80000000.l; jsr $40003848` (memcpy) moves shared RAM `0..0x39F`
+  into SRAM.
+- It copies the output back: `lea $3a0(a1),a1` ... `pea $400.w;
+  pea $80000e00.l; jsr $40003848` puts `0x400` bytes at `0x3A0..0x79F`.
+- The mixer at `0x400038c2` lays out eight voices of 32 longs: an inner
+  `moveq #$20`, two voices `0x80` apart, and an outer loop that steps by 2
+  up to 8.
+- It ends with `rte` at `0x40000a2e`.
+- Measured in the emulator: about 18.4k instructions a render.
+
+### The handshake **[V]**
+
+The DSP side:
+
+- It writes `0x484F` ('HO') at shared `+0` and `0x4841` ('HA') at `+2`
+  (`0x40000b1a`/`b1e`).
+- `0x400008d4` toggles PG2: `move.b #4,$ec09401e` or
+  `move.b #$fb,$ec09402a`.
+- It waits for `0x4230` ('B0') at `0x40000b4e`, then writes `0xA5A5` at
+  `+4` (`0x40000b72`) and toggles PG2 again.
+
+The main side:
+
+- It installs `0x4008d850` as vector 68 (`0x4008d62a`), with EPPAR set for
+  both edges, EPIER bit 4 and ICR04 = 6.
+- The handler checks HO/HA and answers **1 at `+2` first** (`0x4008d8c2`),
+  **then 'B0' at `+0`** (`0x4008d8c8`).
+- On `0xA5A5` it writes 2 to `0x4137b720` (`0x4008d8ec`).
+
+Also:
+
+- Section 6 drives PG2 low before it jumps.
+- A flag in the image (`0x40006790` = 1) makes the first render toggle PG2
+  a third time. The main side ignores that pulse, because its counter
+  `0x4137b718` is already 0.
+- An HO/HA mismatch retries up to five times by toggling PA4.
+
+### The status word `0x4137b720` **[V][C]**
+
+- 0: a boot is **in progress**. It is cleared before the reset is released
+  and written again when 'B0' is sent. **Correction:** not "booted".
+- 1: failure. It is set in three places:
+  - section 6 missing (`0x4008d7c4`);
+  - section 7 missing (`0x4008d7b8`);
+  - the watchdog `0x4008d492`, after more than 18 ticks on the third
+    attempt (`0x4008d4d8`).
+- 2: running.
+- "DSP BOOT FAILURE" is at `0x401d9082`. It is shown when `0x4008d52e`
+  returns 1 (`0x40019bc4`, and again at `0x40019d46`).
+
+### Booting the DSP from the main CPU **[V]**
+
+- The boot task `0x4008d56c` asserts the reset with
+  `move.b #$bf,$ec094025` (PCLRR_B, bit 6) and releases it with
+  `move.b #$40,$ec094019` (PPDSDR_B).
+- DSPI2 is at `0xEC038000` with MCR MSTR = 0, so the main CPU is the SPI
+  slave. Section 6 is the master: it sends a `0x03` read command and skips
+  bytes until `0xAA`.
+- eDMA channel 29 (TCD at `0xFC0453A0`, DADDR PUSHR `0xEC038037`, SERQ
+  `0x1d`) streams section 6 first, with eight `0xFF` in front. Its
+  interrupt (vector 149, `0x4008d40c`) then re-arms it for section 7, with
+  `0xAA` in front.
+- The task pends on `0x4137b70c` at the top of each attempt.
+- That semaphore is posted through `0x400019a0`, from `0x4008d80a`,
+  `0x4008d820` and `0x4008d504`. `0x400019a0` is a post with interrupts
+  masked: `move.w sr,d2; move.w #$2700,sr; jsr $40001632; move.w d2,sr`.
+- `0x40001632` sets the count, readies a waiting task, and forces a
+  reschedule with `bset #13` on INTFRCL2 (`0xFC050014`).
+- `emu/semscan.py` does not know this post routine, so the emulator must
+  never fake this semaphore. Faked, the task re-uploads the DSP thousands
+  of times a second.
+
+### Before the handshake: PIT1 and the FPGA **[V][D]**
+
+- The DSP polls three things:
+  - PIT1's PCSR `0xFC084000` for PIF (`and.l #4`, at `0x40000458`);
+  - `0xEC09401C` bit 0 (`btst #0`, up to 100 tries, at `0x400007f8`);
+  - `0xEC09401D` bit 7, tested through the N flag (`blt`, at
+    `0x40000892`).
+- It pulses PH4 low then high (`0xEC09402B`/`0xEC09401F`, bit 4).
+- It decompresses a bitstream from `0x400077a0` to `0x40009000` and
+  streams it through DSPI1 (`0xFC03C000`). It returns 1–4 on failure,
+  which retries.
+- The names INIT_B (PE0), DONE (PF7) and PROGRAM_B (PH4) are inferred from
+  that sequence, not stated in the image. **[D]**
+- The emulator answers the three polled reads and nothing else. Without any
+  one of them, section 7 retries forever. **[V]**
+
+### Once running: one edge per block **[V]**
+
+- `0x4009c2e4` is the interrupt of eDMA channel 54 (vector 174). TCD54
+  feeds SSI1 transmit (`0xFC0C8000`) with CSR set for half and major, so
+  it fires every `0x100` bytes (32 stereo frames).
+- When `0x41391f28` is set (after A5A5), it calls `0x4008d82a`. That
+  routine flips `0x413776b0` and writes either `#$10` to `0xEC094018` or
+  `#$ef` to `0xEC094024`: one PA4 edge per call.
+- The DSP's DTIM0 captures on any edge (DTMR `0xC1`).
+- The same ISR forces INTC1 source 63 (`or.l #$80000000,$fc04c010`), which
+  is the render on vector 191 (`0x4009d100`, installed at `0x4009c614`).
+- That render starts eDMA channel 47 through SSRT (`moveq #$2f,d0` ...
+  `move.b d0,$fc04401e.l` at `0x4009d18c`), twice a block:
+  - voices, `0x100003A0` → `0x80004110`, `0x400` bytes;
+  - parameters, `0x80001C00` → `0x10000000`, `0x3A0` bytes.
+- The emulator counts 2 SSRT starts per block (22962 for 11480 blocks).
+  **[V]**
+
+### Boot argument bit 19 is the Keys **[V]**
+
+- `0x402292f0` is captured from the boot arguments at entry
+  (`0x400004ec`).
+- About 70 of its 109 references test `andi.l #$80000`.
+- One of them, at `0x40019b68`, leads to the Keys' wheel-calibration check
+  ("WHEEL CALIBRATION" / "INCOMPLETE", `0x401d9070`/`0x401d9065`).
+- This settles the **[O]** under the build floors above. The emulator
+  passes 0, so it runs a plain Digitone.
+
+### The encoder dead zone **[V][C]**
+
+- The encoder driver at `0x400dbd72` keeps its state at `+0x10` in a
+  `0x14`-byte slot, 18 slots from `+0x20` (`0x400dbd4a`).
+- The tick routine `0x400dbcb8` counts an idle encoder's state back up to
+  48 (`moveq #$2f; cmp; blt; addq #1`).
+- A turn subtracts 3×|delta| (`pea (a3,a3.l*2)`, then abs). Nothing steps
+  while the state is above 24 (`moveq #$18,d0; cmp.l d2,d0; bge` at
+  `0x400dbe24`).
+- After an emitted step it adds 48 back (`moveq #$30,d0;
+  add.l d0,$10(a2)` at `0x400dbea0`), but only for configs whose first
+  byte is 0.
+- **Correction:** this session first wrote "a 16-count dead zone". That was
+  a reading of the measurement (at one count per notch, ~16 notches before
+  anything moved), not of the code.
+- `[panel] encoder_counts = 4` in both mk1 device files sends each notch as
+  four counts.
+
+### Measured in the emulator **[V]**
+
+- `--add` takes 25 s on the reference desktop:
+  - the cold boot parks at ~130M instructions;
+  - the intro reaches the live UI;
+  - the first boot settles at ~1300M;
+  - acceptance passes on the card's first-boot layout and status 2.
+- The card has no ekFS: the firmware initialises a blank one.
+- Live playback:
+  - 64M instructions a second, 100% of real time, 0 dropouts;
+  - one render per block, on a render thread using ~80% of a second core;
+  - the factory pattern gives RMS ~1.8k, and the output is silent at idle.
+- The panel's 54 codes were measured by pressing each one. It has 72 LEDs
+  in 18 groups, seeded from RAM (`emu/panelleds.py`).
+- PAGE (25) and FUNC (34) come from the firmware's key/LED table and have
+  not been seen lit. **[O]**

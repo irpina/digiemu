@@ -93,6 +93,46 @@ class StringTableTest(unittest.TestCase):
         self.assertIsNone(value)
 
 
+class ControlNamesTest(unittest.TestCase):
+    """control_names() walks a table in guest memory to its terminator."""
+
+    TABLE = 0x40001000
+    STRINGS = 0x40001100
+
+    def machine(self, names):
+        """A Machine whose encoder table holds `names` (None = a NULL slot)."""
+        from types import SimpleNamespace
+        from emu.harness import Machine
+        m = Machine()
+        m.ensure(self.TABLE)
+        at = self.STRINGS
+        for i, name in enumerate(names):
+            ptr = 0
+            if name is not None:
+                m.uc.mem_write(at, name.encode() + b'\0')
+                ptr, at = at, at + len(name) + 1
+            m.uc.mem_write(self.TABLE + 4 * i, struct.pack('>I', ptr))
+        m.uc.mem_write(self.TABLE + 4 * len(names), b'\0' * 8)
+        profile = SimpleNamespace(panel_button_names=self.TABLE,
+                                  panel_encoder_names=self.TABLE)
+        return m, profile
+
+    def test_entry_zero_is_kept_when_present(self):
+        m, prof = self.machine(['TRIG 1', 'TRIG 2'])
+        self.assertEqual(panelin.control_names(m, prof),
+                         {0: 'TRIG 1', 1: 'TRIG 2'})
+
+    def test_a_null_entry_zero_does_not_end_the_table(self):
+        # The Digitone's encoder table: rotation codes start at 1.
+        m, prof = self.machine([None, 'ENC A', 'ENC B'])
+        self.assertEqual(panelin.control_names(m, prof, 'encoder'),
+                         {1: 'ENC A', 2: 'ENC B'})
+
+    def test_a_later_null_ends_it(self):
+        m, prof = self.machine(['A', None, 'C'])
+        self.assertEqual(panelin.control_names(m, prof), {0: 'A'})
+
+
 class CodeForTest(unittest.TestCase):
     def test_linear_region_matches_the_measured_formula(self):
         for channel in range(6):

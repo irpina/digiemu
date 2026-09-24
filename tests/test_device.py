@@ -94,6 +94,35 @@ class ParseTest(unittest.TestCase):
             with self.assertRaises(device.DeviceError):
                 device.load(path)
 
+    def test_card_panel_kind_and_encoder_counts_default(self):
+        # A file that says nothing keeps the Digitakt's behaviour: an ekFS
+        # card, the Digitakt's window and one wire count per detent.
+        with tempfile.TemporaryDirectory() as d:
+            dev = device.load(write_device(d))
+        self.assertTrue(dev.card_ekfs)
+        self.assertIsNone(dev.panel_kind)
+        self.assertEqual(dev.encoder_counts, 1)
+
+    def test_card_panel_kind_and_encoder_counts(self):
+        text = SYNTHETIC.replace(
+            '[panel]\n', '[card]\nekfs = false\n\n[panel]\nkind = "digitone"\n'
+            'encoder_counts = 4\n')
+        with tempfile.TemporaryDirectory() as d:
+            dev = device.load(write_device(d, text))
+        self.assertFalse(dev.card_ekfs)
+        self.assertEqual(dev.panel_kind, 'digitone')
+        self.assertEqual(dev.encoder_counts, 4)
+
+    def test_bad_card_and_counts_are_refused(self):
+        for bad in ('[card]\nekfs = "no"\n\n[panel]\n',
+                    '[panel]\nencoder_counts = 0\n',
+                    '[panel]\nencoder_counts = 17\n',
+                    '[panel]\nencoder_counts = true\n'):
+            with tempfile.TemporaryDirectory() as d:
+                path = write_device(d, SYNTHETIC.replace('[panel]\n', bad))
+                with self.assertRaises(device.DeviceError, msg=bad):
+                    device.load(path)
+
 
 class WireMappingTest(unittest.TestCase):
     def setUp(self):
@@ -158,10 +187,33 @@ class ShippedDeviceFilesTest(unittest.TestCase):
         self.devices = device.load_all(DEVICES)
 
     def test_every_shipped_product_is_present(self):
-        # Three since the mk1 port added devices/digitakt.toml. This used to
-        # read "both products" and assert the two Digitakt II-era ones.
+        # Three since the mk1 port added devices/digitakt.toml, four since
+        # devices/digitone.toml. This used to read "both products" and assert
+        # the two Digitakt II-era ones.
         names = sorted(d.name for d in self.devices)
-        self.assertEqual(names, ['Digitakt', 'Digitakt II', 'Digitone II'])
+        self.assertEqual(names, ['Digitakt', 'Digitakt II', 'Digitone',
+                                 'Digitone II'])
+
+    def test_digitone_panel_is_complete(self):
+        """devices/digitone.toml: every measured code 1..54 has a label, a
+        wire position of its own and at most one LED; the four page LEDs
+        light no key; it has no sample volume and its own window."""
+        dn = {d.name: d for d in self.devices}['Digitone']
+        self.assertEqual(sorted(dn.labels), list(range(1, 55)))
+        self.assertEqual(len(set(dn.labels.values())), 54)
+        wires = [dn.wire_for(c) for c in range(1, 55)]
+        self.assertNotIn(None, wires)
+        self.assertEqual(len(set(wires)), 54)
+        self.assertIsNone(dn.wire_for(0))            # 0 is no key
+        self.assertEqual(len(set(dn.leds.values())), len(dn.leds))
+        self.assertTrue(set(dn.leds.values()) <= set(dn.labels))
+        self.assertFalse(set(dn.page_leds) & set(dn.leds))
+        self.assertEqual(dn.labels[11], 'PLAY')
+        self.assertFalse(dn.card_ekfs)
+        self.assertEqual(dn.panel_kind, 'digitone')
+        dt = {d.name: d for d in self.devices}['Digitakt']
+        self.assertTrue(dt.card_ekfs)
+        self.assertIsNone(dt.panel_kind)
 
     def test_every_button_code_round_trips(self):
         for dev in self.devices:

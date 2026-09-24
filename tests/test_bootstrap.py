@@ -309,6 +309,15 @@ class CardStageTest(Folder):
             fh.write(b'\x99')
         self.assertFalse(ekfsformat.is_formatted(card, 0))
 
+    def test_a_blank_card_is_one_zero_sector(self):
+        # [card] ekfs = false: the firmware's own first boot lays the card
+        # out, so the stage leaves it nothing but a sector of zeros.
+        card = self.paths.card
+        os.makedirs(os.path.dirname(card))
+        self.assertTrue(bootstrap.blank_card(card))
+        self.assertEqual(_read(card), bytes(512))
+        self.assertFalse(os.path.exists(card + '.tmp'))
+
 
 class SectionsTest(Folder):
     def test_current_needs_the_marker_and_one_main_image(self):
@@ -821,6 +830,15 @@ class CardCheckTest(Folder):
         _poke(self.card, ekfsformat.REGION * 512 + 0x10, b'\x99')
         self._fails('no valid ekFS superblock')
 
+    def test_a_product_without_a_sample_volume_skips_the_ekfs(self):
+        _poke(self.card, ekfsformat.REGION * 512 + 0x10, b'\x99')
+        self.assertEqual(bootstrap.check_card(self.card, ekfs=False), [])
+        self.assertEqual(
+            bootstrap.check_initialised_card(self.card, ekfs=False), [])
+        _poke(self.card, 0, bytes(4))
+        self.assertEqual(
+            len(bootstrap.check_initialised_card(self.card, ekfs=False)), 1)
+
     def test_a_short_or_missing_card(self):
         with open(self.card, 'r+b') as fh:
             fh.truncate(4096)
@@ -881,6 +899,19 @@ class RamCheckTest(unittest.TestCase):
         self.assertIsNone(values['mounted_u32'])
         self.assertIn('mounted_u32 (0x420edc50) is not in the snapshot',
                       problems)
+
+    def test_the_dsp_must_be_running(self):
+        # The Digitone's handshake status: 0 in progress, 1 DSP BOOT FAILURE,
+        # 2 running.
+        acc = dict(self.acc, dsp_running_u32=0x4137b720)
+        self.assertEqual(bootstrap.validate_acceptance(acc), acc)
+        ram = dict(GOOD_RAM)
+        ram[0x4137b720] = bootstrap.DSP_RUNNING
+        self.assertEqual(bootstrap.check_ram(_reader(ram), acc)[1], [])
+        ram[0x4137b720] = 1
+        _values, problems = bootstrap.check_ram(_reader(ram), acc)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn('the DSP did not come up', problems[0])
 
     def test_validation(self):
         self.assertEqual(bootstrap.validate_acceptance(None), {})
@@ -1102,10 +1133,11 @@ class StubbedFirstRunTest(Folder):
         return bootstrap.SettleResult(1_050_000_000, 1_050_000_000, 4190,
                                       1347, 120, out, None)
 
-    def _accept(self, paths, acceptance=None, first_boot=True):
+    def _accept(self, paths, acceptance=None, first_boot=True, ekfs=True):
         self.first_boots.append(first_boot)
         if self.real_accept:
-            return self._accept_settled(paths, acceptance, first_boot=first_boot)
+            return self._accept_settled(paths, acceptance,
+                                        first_boot=first_boot, ekfs=ekfs)
         if self.accept is not None:
             raise StepFailed('settle', self.accept)
         return {'card': 'ok' if first_boot else 'initialised', 'ram': None}
@@ -1301,6 +1333,29 @@ class StubbedFirstRunTest(Folder):
                 self.run_first()
         self.assertEqual(cm.exception.step, 'extract')
         self.assertIn('could not be recorded', cm.exception.reason)
+
+    def test_a_product_without_a_sample_volume_gets_a_blank_card(self):
+        # The Digitone: no ekFS to format; its own first boot initialises
+        # the card, and the acceptance check does not look for a volume.
+        from types import SimpleNamespace
+        seen = []
+        dev = SimpleNamespace(card_ekfs=False)
+        with mock.patch.object(bootstrap, '_intro_policy',
+                               lambda paths: (dev, (3,), False, {})):
+            accept = self._accept
+
+            def spy(paths, acceptance=None, first_boot=True, ekfs=True):
+                seen.append(ekfs)
+                return accept(paths, acceptance, first_boot, ekfs)
+            with mock.patch.object(bootstrap, 'accept_settled', spy):
+                self.assertEqual(self.run_first(), self.paths.gui)
+        self.assertEqual(self.calls, ['extract', 'ladder', 'intro', 'settle'])
+        self.assertEqual(self.heads[0], bytes(8))       # blank at cold boot
+        self.assertFalse(ekfsformat.is_formatted(self.paths.card))
+        self.assertEqual(seen, [False])
+        card = read_state(self.paths)['stages']['card']
+        self.assertIs(card['formatted'], False)
+        self.assertIs(card['blank'], True)
 
 
 class PrepareCardSparseTest(Folder):

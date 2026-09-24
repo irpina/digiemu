@@ -213,6 +213,10 @@ def control_names(m, profile, kind='button', limit=256):
     for code in range(0, limit):
         name = control_name(m, profile, code, kind)
         if name is None:
+            # The Digitone's encoder table has a NULL at entry 0 (rotation
+            # codes start at 1); only a missing entry past it ends the table.
+            if code == 0:
+                continue
             break
         out[code] = name
     return out

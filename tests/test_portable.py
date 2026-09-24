@@ -1081,11 +1081,23 @@ class PanelTest(Base):
         with open(os.path.join(paths.logs, 'panel.log'), 'rb') as fh:
             self.assertIn(b'no device', fh.read())
 
-    def test_only_dt1_has_a_panel(self):
+    def test_a_device_without_a_panel_is_refused(self):
         paths = self.make_folder(device='dt2')
         rc, err, panel = self.run_panel(paths, lambda p: (p.gui, 'gui'))
         self.assertEqual(rc, portable.EXIT_UNSUPPORTED)
         self.assertEqual(panel.calls, [])
+
+    def test_the_digitone_opens_its_own_window(self):
+        paths = self.make_folder(device='dn1')
+        dt, dn = make_panel(), make_panel()
+        with stub_modules(bootstrap=make_bootstrap(choose=lambda p: (p.gui, 'gui')),
+                          dtpanel=dt, dnpanel=dn):
+            rc = portable.worker_panel(paths.root, err=io.StringIO())
+        self.assertEqual(rc, 0)
+        self.assertEqual(dt.calls, [])
+        self.assertEqual(dn.calls, [[paths.gui, '--syx', paths.syx,
+                                     '--save-on-exit', paths.resume, '--app']])
+        self.assertEqual(portable.PANELS['dn1'], 'emu.dnpanel')
 
     def test_a_second_panel_on_the_same_folder_is_busy(self):
         paths = self.make_folder()

@@ -688,12 +688,32 @@ class Esdhc:
         if sem is None:
             return
         try:
-            self.m.ensure(sem)
-            count = struct.unpack('>i', bytes(self.uc.mem_read(sem, 4)))[0]
+            count = struct.unpack('>i', self._read(sem, 4))[0]
             if count <= 0:
-                self.uc.mem_write(sem, struct.pack('>i', 1))
+                self._write(sem, struct.pack('>i', 1))
         except Exception:
             pass
+
+    # -- guest memory, from inside a hook ----------------------------------
+    # Every caller below runs inside the XFERTYP write hook, where mapping a
+    # page is unsafe (see Machine.poke). The driver's status word, its
+    # semaphores and a DMA buffer can all sit in SDRAM the guest has not
+    # touched yet -- on the Digitone the EXT_CSD buffer does, and mapping it
+    # here crashed the host.
+    def _write(self, addr, data):
+        poke = getattr(self.m, 'poke', None)
+        if poke is not None:
+            poke(addr, data)
+            return
+        self.m.ensure(addr)
+        self.uc.mem_write(addr, data)
+
+    def _read(self, addr, n):
+        peek = getattr(self.m, 'peek', None)
+        if peek is not None:
+            return peek(addr, n)
+        self.m.ensure(addr)
+        return bytes(self.uc.mem_read(addr, n))
 
     # -- register access -------------------------------------------------
     def _put(self, off, val):
@@ -776,11 +796,9 @@ class Esdhc:
         # The ISR's bookkeeping. 0x4011fe10 pre-sets this to 1 and returns it
         # after the wait; `unblock` satisfies the wait, so without this the
         # caller always sees "still in progress".
-        # Host-side mem_write does not demand-map; see __init__'s note on
-        # Machine.ensure. This word lives in SDRAM the guest may not have
-        # touched yet at this point.
-        self.m.ensure(self.drv_status)
-        self.uc.mem_write(self.drv_status, struct.pack('>I', 0))
+        # This word lives in SDRAM the guest may not have touched yet at this
+        # point; _write does not map from the hook (see Machine.poke).
+        self._write(self.drv_status, struct.pack('>I', 0))
         # The command-completion half of the ISR: this is what lets
         # FUN_4011d5b4 return from its sem_pend on the cold-boot path.
         self._post(self.cmd_sem)
@@ -813,11 +831,9 @@ class Esdhc:
             return 0
         dst = u32(DADDR)
         chunk = payload[:total].ljust(total, b'\x00')
-        # Host-side mem_write does not demand-map; see __init__'s note on
-        # Machine.ensure. dst is the firmware's EXT_CSD buffer, which the
-        # guest has not necessarily written to yet.
-        self.m.ensure(dst)
-        self.uc.mem_write(dst, chunk)
+        # dst is the firmware's EXT_CSD buffer, which the guest has not
+        # necessarily touched yet; _write does not map from the hook.
+        self._write(dst, chunk)
         self.uc.mem_write(tcd + DADDR, struct.pack('>I', dst + total))
         self.uc.mem_write(tcd + CITER, struct.pack('>H', u16(BITER) & 0x7FFF))
         # The bring-up routine's EXT_CSD read (CMD8 SEND_EXT_CSD) does not
@@ -869,7 +885,7 @@ class Esdhc:
         src, soff = u32(SADDR), s16(SOFF)
         payload = bytearray()
         for _ in range(citer):
-            payload.extend(self.uc.mem_read(src, nbytes))
+            payload.extend(self._read(src, nbytes))
             src += soff
         src += s32(SLAST)
         self.uc.mem_write(tcd + SADDR, struct.pack('>I', src & 0xFFFFFFFF))

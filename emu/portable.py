@@ -119,7 +119,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Which devices have a panel in this version, and which module draws it.
 # A device file can exist (Digitakt II, Digitone II) without the first-run
 # recipe or a panel for it: those are named and refused.
-PANELS = {'dt1': 'emu.dtpanel'}
+PANELS = {'dt1': 'emu.dtpanel', 'dn1': 'emu.dnpanel'}
+# How the refusals and the empty list name what this version runs.
+SUPPORTED = 'Digitakt (mk1) and Digitone (mk1)'
 
 STEPS = ('copy', 'extract', 'card', 'ladder', 'intro', 'settle')
 STEP_TITLES = {
@@ -371,11 +373,25 @@ def _release():
     return mod
 
 
-def _dtpanel():
-    mod = sys.modules.get('emu.dtpanel')
-    if mod is None:
+def _panel_module(name='emu.dtpanel'):
+    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel), looked
+    up in sys.modules first like the others. The imports are spelled out,
+    not importlib'd, so the packaging scan (tests/test_packaging.py) sees
+    both and the bundle carries them."""
+    mod = sys.modules.get(name)
+    if mod is not None:
+        return mod
+    if name == 'emu.dnpanel':
+        from emu import dnpanel as mod
+    elif name == 'emu.dtpanel':
         from emu import dtpanel as mod
+    else:
+        raise ImportError('no panel module %r' % name)
     return mod
+
+
+def _dtpanel():
+    return _panel_module('emu.dtpanel')
 
 
 def _ensure_import_path():
@@ -1237,13 +1253,14 @@ def plan_add(src, home=None):
     device = getattr(rel, 'device', None)
     if rel.status == 'unsupported' or device is None:
         raise Refused('%s %s is an Elektron %s firmware, but %s is not supported '
-                      'yet. This version runs the Digitakt (mk1) only.'
-                      % (rel.product, rel.version, rel.product, rel.product),
-                      EXIT_UNSUPPORTED)
+                      'yet. This version runs the %s.'
+                      % (rel.product, rel.version, rel.product, rel.product,
+                         SUPPORTED), EXIT_UNSUPPORTED)
     if getattr(device, 'short', None) not in PANELS:
         raise Refused('%s %s is recognised, but this version has no panel for the '
-                      '%s yet. It runs the Digitakt (mk1) only.'
-                      % (rel.product, rel.version, rel.product), EXIT_UNSUPPORTED)
+                      '%s yet. It runs the %s.'
+                      % (rel.product, rel.version, rel.product, SUPPORTED),
+                      EXIT_UNSUPPORTED)
     try:
         fwdir = firmware_dir(rel.slug, home)
     except ValueError as exc:
@@ -1598,9 +1615,11 @@ def _marked_incompatible(state, snap):
             and sig is not None and mark.get('sig') == list(sig))
 
 
-def _run_panel(paths, b, snap, log):
-    """Run dtpanel on `snap`, then record in firmware.json what the session
-    left behind. -> (dtpanel's return code, incompatible?).
+def _run_panel(paths, b, snap, log, module='emu.dtpanel'):
+    """Run the device's panel (`module`, from PANELS: emu.dtpanel or
+    emu.dnpanel, which share main()'s arguments and codes) on `snap`, then
+    record in firmware.json what the session left behind. -> (the panel's
+    return code, incompatible?).
 
     'resume' is the card stamp resume.snap was saved against:
       - a clean exit that wrote resume.snap: the card as it is now;
@@ -1621,7 +1640,7 @@ def _run_panel(paths, b, snap, log):
     card_before = b.card_stamp(paths.card)
     before = _file_sig(paths.resume)
     try:
-        panel = _dtpanel()
+        panel = _panel_module(module)
         incompat_code = getattr(panel, 'INCOMPATIBLE', DTPANEL_INCOMPATIBLE)
         rc = panel.main([snap, '--syx', paths.syx, '--save-on-exit',
                          paths.resume, '--app'])
@@ -1710,7 +1729,8 @@ def worker_panel(fwdir, err=None):
                 return EXIT_NOT_READY
             log.write('snapshot %s\n' % snap)
             log.write('power throttling off: %s\n' % disable_power_throttling())
-            rc, incompatible = _run_panel(paths, b, snap, log)
+            rc, incompatible = _run_panel(paths, b, snap, log,
+                                          module=PANELS[short])
             if incompatible:
                 return EXIT_INCOMPATIBLE
             if rc == DTPANEL_SAMPLES_ADDED:
@@ -2455,7 +2475,7 @@ class Launcher:
         self.note.set('%d firmware in %s' % (len(infos), firmware_root(self.home))
                       if infos else
                       'No firmware yet. "Add firmware..." takes an Elektron OS '
-                      '.syx file (Digitakt mk1).')
+                      '.syx file (%s).' % SUPPORTED)
         self._update_buttons()
 
     def _auto_refresh(self):
@@ -2838,7 +2858,8 @@ def launcher(home=None):
 
 def _parser():
     ap = argparse.ArgumentParser(
-        prog=APP_NAME, description='Digitakt emulator: the portable app.')
+        prog=APP_NAME, description='Digitakt and Digitone emulator: the '
+                                   'portable app.')
     ap.add_argument('--home', metavar='DIR',
                     help='data folder (default: next to the exe; from source '
                          '$DIGIEMU_HOME or <repo>/portable)')

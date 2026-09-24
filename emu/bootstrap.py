@@ -908,6 +908,20 @@ def prepare_card(path, base=None, progress=None):
     return True
 
 
+def blank_card(path):
+    """Create an empty +Drive image, for a product whose first boot lays
+    down everything it needs itself (no sample volume to pre-format). The
+    same sparse one-sector file emu/esdhc.py's Card makes for a missing
+    path; reads past its end are zeros. -> True."""
+    from emu import sparse
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as fh:
+        sparse.make_sparse(fh)
+        sparse.extend(fh, 512)
+    replace_retry(tmp, path)
+    return True
+
+
 # ------------------------------------------------------ first boot's card
 # What the firmware's first-boot job leaves on the card (the +Drive first-
 # boot investigation of 2026-09-23, summarised in
@@ -925,8 +939,12 @@ CARD_PROJECT0 = 0x80000 * 512        # project slot 0, 0x10000000
 
 # The [firmware.acceptance] keys a device file may give, each a guest
 # address of a u32 in RAM after first boot; see validate_acceptance.
+# dsp_running_u32 is not written in device files: _intro_policy adds it from
+# the image (symbols.dsp_status) on a Digitone, whose second CPU has to have
+# come up (2) -- see emu/dsplink.py.
 ACCEPTANCE_KEYS = ('error_u32', 'progress_done', 'progress_total',
-                   'mounted_u32')
+                   'mounted_u32', 'dsp_running_u32')
+DSP_RUNNING = 2
 
 
 def _card_problems(path, ekfs=True):
@@ -967,25 +985,28 @@ def _card_problems(path, ekfs=True):
     return problems
 
 
-def check_card(path):
+def check_card(path, ekfs=True):
     """-> the reasons `path` is not a card that finished first boot.
 
     [] when sector 0 is BE EF BA CE 00 00 00 00, bit 0 of the sector-0x800
     record (project 0 protected) is set, project slot 0 starts BE EF BA CE,
     the sound slots are not all zero and the ekFS superblock verifies. None
-    of this depends on the firmware version.
+    of this depends on the firmware version. `ekfs` False drops the last
+    check, for a product with no sample volume (the Digitone): its first
+    boot leaves the same sector 0, record, project slot and sounds.
     """
-    return _card_problems(path, ekfs=True)
+    return _card_problems(path, ekfs=ekfs)
 
 
-def check_initialised_card(path):
+def check_initialised_card(path, ekfs=True):
     """-> the reasons `path` is not an initialised +Drive ([] = none).
 
     For a settle whose cold boot found the card already initialised (sector
     0 BEEFBACE), so first boot did not run in this chain: the firmware
     installed nothing, and what the user has done since -- unprotected or
     overwritten project 0, deleted the factory sounds, FORMAT +DRIVE -- is
-    theirs. Only sector 0 and a mountable sample volume are required.
+    theirs. Only sector 0 and a mountable sample volume (where the product
+    has one: `ekfs`) are required.
     """
     from emu import ekfsformat
     try:
@@ -997,7 +1018,7 @@ def check_initialised_card(path):
     if head[:4] != BEEFBACE:
         problems.append('sector 0 holds %s, not be ef ba ce: the +Drive is '
                         'not initialised' % (head.hex(' ') or 'nothing'))
-    if not ekfsformat.is_formatted(path):
+    if ekfs and not ekfsformat.is_formatted(path):
         problems.append('no valid ekFS superblock at sector 0x%x: the sample '
                         'volume would not mount' % ekfsformat.REGION)
     return problems
@@ -1124,10 +1145,14 @@ def check_ram(read, acceptance):
     if mounted not in (None, 1):
         problems.append('the +Drive sample volume is not mounted (0x%08x = '
                         '%d)' % (acceptance['mounted_u32'], mounted))
+    dsp = values.get('dsp_running_u32')
+    if dsp not in (None, DSP_RUNNING):
+        problems.append('the DSP did not come up (0x%08x = %d; 1 is DSP BOOT '
+                        'FAILURE)' % (acceptance['dsp_running_u32'], dsp))
     return values, problems
 
 
-def accept_settled(paths, acceptance=None, first_boot=True):
+def accept_settled(paths, acceptance=None, first_boot=True, ekfs=True):
     """Check that first boot really finished before settle is stamped.
 
     The settle rule only looks at pixels: 120 main-UI frames in a row. A
@@ -1140,13 +1165,16 @@ def accept_settled(paths, acceptance=None, first_boot=True):
     must hold it (check_card); otherwise the card is the user's and only
     has to be initialised (check_initialised_card) -- a rebuild after the
     user changed project 0 or the sounds must not be refused for good.
+    `ekfs` is the device's [card] ekfs: False for a product with no sample
+    volume to check.
     -> {'card': 'ok' or 'initialised', 'ram': values or None};
     StepFailed('settle') listing every problem otherwise.
     """
     if first_boot:
-        problems, verdict = check_card(paths.card), 'ok'
+        problems, verdict = check_card(paths.card, ekfs=ekfs), 'ok'
     else:
-        problems, verdict = check_initialised_card(paths.card), 'initialised'
+        problems, verdict = (check_initialised_card(paths.card, ekfs=ekfs),
+                             'initialised')
     ram = None
     if acceptance:
         ram, bad = check_ram(snapshot_reader(paths.gui), acceptance)
@@ -1324,6 +1352,9 @@ def _intro_policy(paths):
         prof = symbols.resolve(fh.read(), load_addr=MAIN_LOAD)
     except_sem = (not dev.intro_unblocks_frame_sem
                   and prof.frame_sem is not None)
+    if prof.dsp_status is not None and 'dsp_running_u32' not in acceptance:
+        # A Digitone: its second CPU must have come up (emu/dsplink.py).
+        acceptance = dict(acceptance, dsp_running_u32=prof.dsp_status)
     return dev, tuple(dev.intro_channels), except_sem, acceptance
 
 
@@ -1483,8 +1514,23 @@ def first_run(paths, progress=None, cancel=None):
         raise StepFailed('extract', _describe(exc)) from exc
 
     # card ---------------------------------------------------------------
+    # A product with no sample volume (the Digitone: [card] ekfs = false)
+    # gets a blank card, and its own first boot initialises it.
     from emu import ekfsformat
-    if ekfsformat.is_formatted(paths.card):
+    ekfs = getattr(_dev, 'card_ekfs', True)
+    if not ekfs:
+        if os.path.exists(paths.card):
+            if 'card' not in stages:
+                stages = record('card', {'inputs': {'recipe': RECIPE},
+                                         'formatted': False}, drop_after=False)
+            skipped('card', 'the card exists')
+        else:
+            _r, secs = stage('card', lambda p: blank_card(paths.card))
+            stages = record('card', {'inputs': {'recipe': RECIPE},
+                                     'formatted': False, 'blank': True,
+                                     'seconds': secs},
+                            also=lambda s: s.pop('first_boot', None))
+    elif ekfsformat.is_formatted(paths.card):
         if 'card' not in stages:
             stages = record('card', {'inputs': {'recipe': RECIPE},
                                      'formatted': False}, drop_after=False)
@@ -1628,7 +1674,7 @@ def first_run(paths, progress=None, cancel=None):
                 first_boot = not read_state(paths).get('first_boot')
             try:
                 verdict = accept_settled(paths, acceptance,
-                                         first_boot=first_boot)
+                                         first_boot=first_boot, ekfs=ekfs)
             except StepFailed:
                 # Unstamped, so nothing opens it; kept for a look.
                 _set_aside(paths.gui)

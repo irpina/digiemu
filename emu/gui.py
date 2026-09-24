@@ -496,7 +496,13 @@ class Emulator(threading.Thread):
             if kind == 'encoder':
                 channel = self.device.encoder_channel(code)
                 if channel is not None:
-                    out += panelin.encode_encoder(channel, arg)
+                    # A detent from the window is several counts on the
+                    # wire ([panel] encoder_counts): the firmware's encoder
+                    # driver has a dead zone, and at one count a notch a
+                    # knob needed ~16 notches before anything moved.
+                    step = arg * getattr(self.device, 'encoder_counts', 1)
+                    out += panelin.encode_encoder(
+                        channel, max(-127, min(127, step)))
             elif not button_ok or (paced and took_button):
                 deferred.append((kind, code, arg))
             else:
@@ -729,6 +735,12 @@ class Emulator(threading.Thread):
                 # (emu/native.py). The PIT3 write probe below does read it.
                 if os.environ.get('DIGIKIT_PIT3_PROBE') != '1':
                     native.enable_options(m.uc, native.NO_HOOK_PC_SYNC)
+                # The Digitone's DSP (emu/dsplink.py): under live audio its
+                # renders run on their own thread, in parallel with the main
+                # CPU, as the two chips do.
+                dsp = ev.get('dspcpu')
+                if dsp is not None and self.audio_live:
+                    dsp.start_thread()
             else:
                 self.audio_live = False
             if self.patch_machine:
@@ -1063,6 +1075,11 @@ class Emulator(threading.Thread):
                     pass
         else:
             self._stop_cleanly(m, ev, st, pits)
+        # The Digitone's DSP renders on a thread of its own under live
+        # audio; it must be stopped before the engines go.
+        dsp = ev.get('dspcpu')
+        if dsp is not None:
+            dsp.close()
         self._close_live()
         n_seen = len(m.fault_pages)
         n_kept = len(m.faults)
@@ -1171,12 +1188,13 @@ class Emulator(threading.Thread):
         if self._uart is None:
             return
         version = getattr(self.firmware, 'version', None)
+        product = getattr(self.device, 'name', None)
         self._led_state = panelleds.seed(
-            lambda a, n: bytes(m.uc.mem_read(a, n)), version)
+            lambda a, n: bytes(m.uc.mem_read(a, n)), version, product)
         if self._led_state is None:
             print('[gui] LEDs: no RAM seed for firmware %s; they light as the '
                   'firmware next sends them' % version, flush=True)
-            self._led_state = panelleds.LedState()
+            self._led_state = panelleds.new_state(version, product)
         self._update_leds()
 
     def _update_leds(self):

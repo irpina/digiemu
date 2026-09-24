@@ -135,6 +135,10 @@ class Machine:
         # raising*, so a caller that assumes it executed its full budget will
         # race to the end of a run that never happened.
         self.halt_vec = None
+        # Writes poke() could not make yet because their page was not mapped,
+        # page base -> [(addr, bytes)] in the order they were made. ensure()
+        # applies them the moment the page is mapped.
+        self.pending = {}
         self.uc.hook_add(UC_HOOK_MEM_INVALID, self._fault)
 
     # -- memory ------------------------------------------------------------
@@ -146,7 +150,70 @@ class Machine:
             self.uc.mem_map(base, PAGE)
             self.mapped.add(base)
         except UcError:
-            pass
+            return
+        for at, data in self.pending.pop(base, ()):
+            self.uc.mem_write(at, data)
+
+    def _pages(self, addr, n):
+        first = addr & ~(PAGE - 1)
+        last = (addr + max(n, 1) - 1) & ~(PAGE - 1)
+        return range(first, last + PAGE, PAGE)
+
+    def poke(self, addr, data):
+        """Write guest memory from inside a memory hook.
+
+        A memory hook runs in the middle of the guest's own load or store, and
+        mapping a page there resizes Unicorn's TLB under that access: the
+        store then lands on a stale host pointer (an access violation at the
+        guest address, seen on the Digitone's first EXT_CSD read, whose
+        buffer page nothing had touched yet). So a write to a page that is not
+        mapped is held in `pending` instead and made when the page is mapped:
+        by the guest's own first access to it (_fault), which is where the
+        data is first needed, or by ensure()/flush_pending() outside
+        emulation. Mapped pages are written at once.
+        """
+        data = bytes(data)
+        pages = self._pages(addr, len(data))
+        if all(p in self.mapped for p in pages):
+            self.uc.mem_write(addr, data)
+            return
+        for p in pages:
+            lo, hi = max(addr, p), min(addr + len(data), p + PAGE)
+            if lo >= hi:
+                continue
+            chunk = data[lo - addr:hi - addr]
+            if p in self.mapped:
+                self.uc.mem_write(lo, chunk)
+            else:
+                self.pending.setdefault(p, []).append((lo, chunk))
+
+    def peek(self, addr, n):
+        """Read guest memory from inside a memory hook, without mapping.
+
+        An unmapped page reads as the zeros it will be mapped with, with any
+        pending poke() writes applied on top.
+        """
+        if all(p in self.mapped for p in self._pages(addr, n)):
+            return bytes(self.uc.mem_read(addr, n))
+        out = bytearray(n)
+        for p in self._pages(addr, n):
+            lo, hi = max(addr, p), min(addr + n, p + PAGE)
+            if lo >= hi:
+                continue
+            if p in self.mapped:
+                out[lo - addr:hi - addr] = self.uc.mem_read(lo, hi - lo)
+                continue
+            for at, data in self.pending.get(p, ()):
+                s, e = max(at, lo), min(at + len(data), hi)
+                if s < e:
+                    out[s - addr:e - addr] = data[s - at:e - at]
+        return bytes(out)
+
+    def flush_pending(self):
+        """Map every page poke() is still holding writes for. Only outside
+        emulation, e.g. before a snapshot is saved."""
+        for base in sorted(self.pending):
+            self.ensure(base)
 
     def _fault(self, uc, typ, addr, size, val, data):
         """Record the access, then map a zero page and continue.

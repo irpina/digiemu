@@ -1,9 +1,11 @@
-# digiemu — a Digitakt mk1 emulator
+# digiemu — a Digitakt mk1 and Digitone mk1 emulator
 
-digiemu runs the Elektron Digitakt (mk1)'s own firmware on a PC. An emulated
-ColdFire CPU boots the real operating system to its live user interface, and
-a clickable front panel plays it: the screen, every key and encoder with the
-key LEDs, the sequencer, the +Drive, and live 48 kHz audio.
+digiemu runs the Elektron Digitakt (mk1)'s and Digitone (mk1)'s own firmware
+on a PC. An emulated ColdFire CPU boots the real operating system to its live
+user interface, and a clickable front panel plays it: the screen, every key
+and encoder with the key LEDs, the sequencer, the +Drive, and live 48 kHz
+audio. On the Digitone a second emulated CPU runs the firmware's own FM voice
+engine, and the Digitone has a window of its own.
 
 You bring the firmware. digiemu contains none of Elektron's code, and it is
 not affiliated with or endorsed by Elektron.
@@ -14,16 +16,18 @@ not affiliated with or endorsed by Elektron.
 1. Download `digiemu-win64-<version>.zip` from
    [Releases](https://github.com/irpina/digiemu/releases) and unzip it
    anywhere you can write to, except a OneDrive folder.
-2. Get the Digitakt firmware, `Digitakt_OS1.53.syx`, from Elektron's website.
+2. Get the firmware from Elektron's website: `Digitakt_OS1.53.syx` for the
+   Digitakt, or `Digitone_and_Digitone_Keys_OS1.43.syx` for the Digitone.
 3. Run `digiemu.exe`, click **Add firmware** and pick the `.syx`.
 4. When it says the firmware is ready, click **Play**.
 
 Step 3 takes about 25 seconds on a desktop (longer on a slow laptop), once
 per firmware. digiemu identifies the device and version from the file itself,
-formats an emulated +Drive, and runs the firmware's own first boot, which
+prepares an emulated +Drive, and runs the firmware's own first boot, which
 installs the factory project and sounds onto it. From then on, **Play** opens
-the panel straight away, and closing the panel saves the session so the next
-Play carries on where you left off.
+that device's panel straight away, and closing the panel saves the session
+so the next Play carries on where you left off. Both devices can be set up
+side by side.
 
 The exe is not code-signed, so Windows shows a SmartScreen prompt the first
 time, and a PC with Smart App Control turned on blocks it.
@@ -35,7 +39,12 @@ time, and a PC with Smart App Control turned on blocks it.
 - **Encoders:** mouse wheel or drag. Click the letter under a knob to push it.
 - **Audio:** MUTE silences the live output. PLAY replays what has been
   recorded, CLEAR empties the recording, and SAVE WAV writes it to a file.
-- **LOAD SAMPLES:** see below.
+- **LOAD SAMPLES** (Digitakt only): see below.
+
+The Digitone window has the Digitone's layout: the six parameter-page keys
+(TRIG, SYN1, SYN2, FLTR, AMP, LFO) down the right, T1–T4 and MIDI down the
+left, LEVEL/DATA beside the eight encoders. The Digitone has no sample
+engine, so it has no LOAD SAMPLES.
 
 ### Loading samples
 
@@ -85,23 +94,29 @@ the factory content.
 ## Status
 
 digiemu is tested with **Digitakt mk1 OS 1.53** (SHA-256
-`9bdd44bb6102fb25c143cfab97bc92b7a89c463f795d3112dce89771e29bcc92`). Other
-Digitakt mk1 releases are offered as untested and run once you confirm.
-Other Elektron products are recognised and turned away for now.
+`9bdd44bb6102fb25c143cfab97bc92b7a89c463f795d3112dce89771e29bcc92`) and
+**Digitone mk1 OS 1.43** (SHA-256
+`c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`). Other
+releases of the two are offered as untested and run once you confirm. Other
+Elektron products are recognised and turned away for now.
 
 **Works:** booting to the live user interface; every key, encoder and key
-LED; the sequencer and patterns; the +Drive with projects and samples; live
-48 kHz audio. A desktop runs about 2.5 times faster than the real hardware
-needs, which leaves headroom for live audio; `tools/capbench.py` measures a
-given PC.
+LED; the sequencer and patterns; the +Drive with projects (and, on the
+Digitakt, samples); live 48 kHz audio. On the Digitone the FM voices are
+rendered by its second CPU's own code, on a thread of its own. A desktop
+runs about 2.5 times faster than the Digitakt needs, which leaves headroom
+for live audio; the Digitone also uses most of a second core.
+`tools/capbench.py` measures a given PC.
 
 **Not yet:**
-- The factory *sample* library lives on the real device's storage, not in
-  the firmware, so `/factory` is empty and sounds that use it are silent.
+- The Digitakt's factory *sample* library lives on the real device's
+  storage, not in the firmware, so `/factory` is empty and sounds that use
+  it are silent.
 - Whether a 44.1 kHz sample plays at the right pitch is not checked yet. A
   48 kHz sample's rendered output has been checked against its source.
+- The Digitone runs as a plain Digitone: the Digitone Keys' keyboard, wheels
+  and extra keys are not there.
 - Some interrupt-controller behaviour is approximated rather than modelled.
-- Digitone mk1 is not supported yet.
 
 [docs/STATUS.md](docs/STATUS.md) has the details and the list of open work.
 
@@ -124,7 +139,8 @@ flags and its multiply-accumulate unit, and three make it fast enough for
 live audio.
 
 To work on the emulator itself (the panel on its own, the boot tools, the
-tracing tools), start with [DIGITAKT-MK1.md](DIGITAKT-MK1.md).
+tracing tools), start with [DIGITAKT-MK1.md](DIGITAKT-MK1.md);
+[DIGITONE-MK1.md](DIGITONE-MK1.md) covers what the Digitone adds.
 
 ### Building the Windows app
 
@@ -153,6 +169,7 @@ snapshots, card images and any file over 1 MB, on every pull request.
 |---|---|
 | [docs/STATUS.md](docs/STATUS.md) | What works, what does not, and the open work |
 | [DIGITAKT-MK1.md](DIGITAKT-MK1.md) | How the mk1 emulation works: boot, panel, audio, sequencer, and the tools |
+| [DIGITONE-MK1.md](DIGITONE-MK1.md) | The Digitone: its second CPU, card, panel and measurements |
 | [docs/mk1/](docs/mk1/00-INDEX.md) | The firmware reference: 01–09 are generated, 10 onwards written by hand |
 | [patches/README.md](patches/README.md) | The six Unicorn patches |
 | [docs/TOOLS.md](docs/TOOLS.md) | The reverse-engineering tools |

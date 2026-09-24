@@ -1,4 +1,8 @@
-"""Digitakt mk1 key LEDs, decoded from the ColdFire -> panel MCU stream.
+"""mk1 key LEDs, decoded from the ColdFire -> panel MCU stream.
+
+The Digitakt's panel has 44 LEDs in 11 selector groups (LEDS, GROUPS); the
+Digitone's the same protocol with 72 in 18 (its SEED entry). The notes below
+were made on the Digitakt.
 
 Everything the main CPU tells the panel MCU goes out on UART8 through the one
 TX ring, and the eDMA model collects it in `ev['uart_out']`. The format below
@@ -32,14 +36,33 @@ LEDS = 44
 GROUPS = 11
 
 # A resumed snapshot's stream starts empty, so the state the MCU was last told
-# is read back from the firmware's own shadow copies. Literal OS 1.53
-# addresses, used only for that version and only if they look right.
+# is read back from the firmware's own shadow copies. Literal addresses, used
+# only for the release they were read from and only if they look right. A
+# bare version is the Digitakt mk1's; other products are keyed (name,
+# version), with their own LED count.
+#
+# The Digitone (mk1) 1.43 addresses were found by porting the Digitakt's
+# builders to its image (slot cache 0x400f9518, selector flush 0x400f90fc,
+# palette 0x400f937a): its selector flush walks 18 groups, so 72 LEDs, and
+# its palette has the same 41 entries.
 SEED = {
     '1.53': dict(slot_cache=0x439CFF41,   # byte [(led+1)*4 + slot]; FF = undefined
                  selectors=0x421D1E0C,    # 11 bytes, last selector bytes sent
                  palette=0x4020D900),     # 41 x u32 0x00RRGGBB, last palette sent
+    ('Digitone', '1.43'): dict(slot_cache=0x43229D43, selectors=0x419CE71C,
+                               palette=0x40241A4C, leds=72, groups=18),
 }
 PALETTE = 41
+
+
+def seed_table(version, product=None):
+    """-> the SEED entry for a release, or None. A bare version key is the
+    Digitakt mk1's, so another product never borrows it."""
+    if product is not None:
+        where = SEED.get((product, version))
+        if where is not None or product != 'Digitakt':
+            return where
+    return SEED.get(version)
 
 
 def msg_len(h):
@@ -58,9 +81,11 @@ def msg_len(h):
 class LedState:
     """What the panel MCU has been told, fed incrementally."""
 
-    def __init__(self):
+    def __init__(self, leds=LEDS, groups=GROUPS):
+        self.leds = leds
+        self.groups = groups
         self.slot = [[None] * 4 for _ in range(256)]
-        self.sel = [None] * GROUPS
+        self.sel = [None] * groups
         self.palette = {}
         self.contrast = None
         self.tail = b''
@@ -79,7 +104,7 @@ class LedState:
                 break
             m = buf[i:i + n]
             i += n
-            if h >> 4 == 0x2 and (h & 0xF) < GROUPS:
+            if h >> 4 == 0x2 and (h & 0xF) < self.groups:
                 self.sel[h & 0xF] = m[1]
             elif 0xB0 <= h <= 0xB3:
                 self.slot[m[1]][h & 3] = m[2]
@@ -94,6 +119,8 @@ class LedState:
 
     def index(self, led):
         """Palette index LED `led` shows, or None if not yet defined."""
+        if led >> 2 >= len(self.sel):
+            return None
         s = self.sel[led >> 2]
         if s is None:
             return None
@@ -102,14 +129,20 @@ class LedState:
     def colours(self):
         """{led: (r, g, b) 0..255} for every LED with a defined colour."""
         out = {}
-        for led in range(LEDS):
+        for led in range(self.leds):
             rgb = self.palette.get(self.index(led))
             if rgb is not None:
                 out[led] = tuple(min(31, v) * 255 // 31 for v in rgb)
         return out
 
 
-def seed(read, version):
+def new_state(version, product=None):
+    """-> an empty LedState sized for this product's panel."""
+    where = seed_table(version, product) or {}
+    return LedState(where.get('leds', LEDS), where.get('groups', GROUPS))
+
+
+def seed(read, version, product=None):
     """-> an LedState equal to what the MCU was last told, or None.
 
     `read(addr, n) -> bytes`. None for a firmware without known addresses, or
@@ -117,22 +150,23 @@ def seed(read, version):
     over 31, a slot over the palette size), so a wrong guess draws nothing
     rather than garbage.
     """
-    where = SEED.get(version)
+    where = seed_table(version, product)
     if where is None:
         return None
+    leds, groups = where.get('leds', LEDS), where.get('groups', GROUPS)
     try:
-        cache = read(where['slot_cache'], (LEDS + 1) * 4)
-        sel = read(where['selectors'], GROUPS)
+        cache = read(where['slot_cache'], (leds + 1) * 4)
+        sel = read(where['selectors'], groups)
         pal = read(where['palette'], PALETTE * 4)
     except Exception:                                   # noqa: BLE001
         return None
-    st = LedState()
+    st = LedState(leds, groups)
     for i in range(PALETTE):
         z, r, g, b = pal[i * 4:i * 4 + 4]
         if z or r > 31 or g > 31 or b > 31:
             return None
         st.palette[i] = (r, g, b)
-    for led in range(LEDS):
+    for led in range(leds):
         for s in range(4):
             v = cache[(led + 1) * 4 + s]
             if v != 0xFF and v >= PALETTE:

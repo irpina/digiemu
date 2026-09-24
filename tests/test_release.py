@@ -469,6 +469,7 @@ class DeviceIdsTest(Tmp):
                for d in device.load_all(DEVICES)}
         self.assertEqual(ids, {'Digitakt': (0x0A, 0x05),
                                'Digitakt II': (0x14, 0x0F),
+                               'Digitone': (0x0D, 0x08),
                                'Digitone II': (0x15, 0x10)})
         for dev in device.load_all(DEVICES):
             self.assertEqual(release.PRODUCTS[(dev.sysex_id,

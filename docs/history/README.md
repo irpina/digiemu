@@ -14,6 +14,7 @@ Newest first. Each one continues the one below it.
 
 | Date | Handoff | Headline |
 |---|---|---|
+| 2026-09-24 | [HANDOFF-2026-09-24.md](HANDOFF-2026-09-24.md) | The Digitone mk1 runs: its second CPU renders the FM voices live, its own window, first run in 25 s. The mk1 encoder dead zone; a DSP thread race found and fixed. |
 | 2026-09-23 | [HANDOFF-2026-09-23.md](HANDOFF-2026-09-23.md) | Live 48 kHz audio in real time, and patterns play. The sixth Unicorn patch for headroom; the portable Windows app, digiemu; the first run cut from 8.5 minutes to ~25 s; LOAD SAMPLES. |
 | 2026-09-22 | [HANDOFF-2026-09-22.md](HANDOFF-2026-09-22.md) | A sample loads into a project: the +Drive writer's directory indexes, sample format and content hash, each found by measurement. Key names settled, key LEDs working. |
 | 2026-09-21 | [HANDOFF-2026-09-21.md](HANDOFF-2026-09-21.md) | A load-bearing earlier conclusion was wrong. The sequencer advances; the "+DRIVE" overlay diagnosis corrected; new firmware documents on the +Drive and audio. |

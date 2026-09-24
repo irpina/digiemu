@@ -423,6 +423,14 @@ class SoftwareChannel:
 # would duplicate a peripheral's transfers.
 CLAIMED = frozenset((35, 48, 50, 52, 54, 59))
 
+# The controller's Set START Request register: writing a channel number sets
+# that descriptor's CSR.START without touching the CSR itself (bit 6 means
+# every channel). The Digitone's audio handler starts its DSP transfers on
+# channel 47 this way (0x4009d18c and 0x4009e030 in OS 1.43), never through
+# the CSR, so a bank watching only the CSRs never ran them and the handler
+# spun on DONE for ever.
+EDMA_SSRT = 0xFC04401E
+
 
 class SoftwareBank:
     """Every software-started channel, under one hook over the TCD region.
@@ -437,7 +445,12 @@ class SoftwareBank:
         self.claimed = frozenset(claimed)
         self.channels = {}
         self.pending = []
+        self.ssrt_starts = 0
         self._native = None
+        # SSRT starts go through Python on either path: the native engine
+        # watches the CSRs only.
+        machine.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_ssrt,
+                            begin=EDMA_SSRT, end=EDMA_SSRT)
         for ch in range(channels):
             if ch in self.claimed:
                 continue
@@ -499,19 +512,42 @@ class SoftwareBank:
         if channel is not None and channel._pending is not None:
             channel._apply()
 
+    def _on_ssrt(self, uc, access, address, size, value, user_data):
+        """SSRT: start the channel written, as a CSR START would. The guest's
+        store is to SSRT, not to the CSR, so the completion can be written
+        straight away; a transfer that needs a page mapped waits for
+        service(), like any other."""
+        v = value & 0xFF
+        if v & 0x40:
+            return                      # 'all channels': nothing uses it
+        channel = self.channels.get(v & 0x3F)
+        if channel is None:
+            return
+        channel._w16(CSR, channel._u16(CSR) | CSR_START)
+        self.ssrt_starts += 1
+        if not channel._mapped():
+            channel._deferred = True
+            channel.deferred += 1
+            if channel not in self.pending:
+                self.pending.append(channel)
+            return
+        channel._transfer(uc, ensure=False)
+        channel._apply()
+
     # -- the run loop ---------------------------------------------------
     def step(self, done, remaining=None):
         return None
 
     def service(self, done):
+        did = False
+        if self.pending:
+            for channel in self.pending:
+                channel.service(done)
+            self.pending = []
+            did = True
         if self._native is not None:
-            return self._service_native()
-        if not self.pending:
-            return False
-        for channel in self.pending:
-            channel.service(done)
-        self.pending = []
-        return True
+            did = self._service_native() or did
+        return did
 
     def _service_native(self):
         """Run what the native side deferred; show any unpolled DONE."""

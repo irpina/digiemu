@@ -62,8 +62,13 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           deferred_components=(), idle_yield=20000, fast_idle=False,
           ssi0_request_hz=None,
           ssi0_legacy_upgrade=False, ssi0_profile=None,
-          modeled_vectors=(208,)):
+          modeled_vectors=(208,), dsp_cpu=True):
     """Stand up a hooked Machine and restore `snapshot` onto it.
+
+    dsp_cpu: on a Digitone (an image with the DSP boot task), run its
+    second CPU for real from section 7 in the sections directory (the synth
+    voices); False, or no section 7 there, gives the handshake stand-in.
+    Which one ran is part of the checkpoint manifest. See emu/dsplink.py.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
     begin==end code hook and `inq` is the UART8 receive queue (a deque of
@@ -570,6 +575,22 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             frame_sem = profile.frame_sem
             at(profile.intro_done, lambda uc, a, s, d: skip.add(frame_sem))
 
+    # The Digitone's second CPU (see emu/dsplink.py): section 7 run for real
+    # when the sections directory has it, else the handshake stand-in. Only
+    # an image with the DSP boot task gets either, so a Digitakt's run and
+    # manifest are unchanged. Its request semaphore has a poster semscan
+    # cannot see, so it is never faked.
+    from emu import dsplink as _dsplink
+    link = _dsplink.install(m, ev, profile, sections_dir=config.sections_dir(),
+                            real=dsp_cpu)
+    if link is not None:
+        checkpoint_manifest['dsplink'] = ('cpu' if isinstance(
+            link, _dsplink.DspCpu) else 1)
+        m.async_sources = getattr(m, 'async_sources', ()) + (link,)
+        if unblock and link.request_sem is not None:
+            skip.add(link.request_sem)
+            ev['never_fake'] = ev['never_fake'] | {link.request_sem}
+
     def onr(uc, typ, addr, size, val, data):
         if addr == USR8: uc.mem_write(USR8, bytes([0x04 | (0x01 if inq else 0)]))
         elif addr == UDR8: uc.mem_write(UDR8, bytes([inq.popleft() if inq else 0]))
@@ -596,6 +617,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     # Observations (tasks, prints, switches, UART output) deliberately are
     # not checkpoint state: checkpoint comparisons use their post-save suffix.
     checkpoint_components: dict[str, Any] = {'uart_in': inq}
+    if link is not None:
+        checkpoint_components['dsplink'] = link
     if tx is not None:
         checkpoint_components['edma_tx'] = tx
     if ssi0 is not None:
@@ -954,6 +977,12 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
         deferred.require_claimed()
     if async_events and pits is None:
         raise ValueError("async event sources require the shared timer clock")
+    # Sources build() attached to the machine itself (the Digitone's DSP
+    # link) run on the same clock, so every caller that steps with timers
+    # services them without having to know they exist.
+    own = getattr(m, 'async_sources', ())
+    if own and pits is not None:
+        async_events = tuple(async_events) + tuple(own)
     done, stop = 0, 'limit'
     base = pits.now if pits is not None else 0      # resume, do not rewind
     while done < instrs:

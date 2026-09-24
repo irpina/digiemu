@@ -186,14 +186,28 @@ class DigitaktPanel(tk.Tk):
     # _wait_for_worker.
     STOP_TIMEOUT = 5.0
 
+    # What makes this the Digitakt's window rather than another product's.
+    # emu/dnpanel.py's DigitonePanel overrides these and nothing else of the
+    # machinery: the emulator thread, input, LEDs, audio and shutdown are
+    # shared.
+    PRODUCT = 'Digitakt'
+    TITLE = 'digiemu — Digitakt mk1 emulator (unofficial)'
+    SUBTITLE = ('Digitakt mk1 emulator · unofficial, not affiliated with '
+                'Elektron')
+    BUTTONS = BUTTONS
+    ENCODERS = ENCODERS
+    PANEL_W, PANEL_H = PANEL_W, PANEL_H
+    SAMPLES = True                       # the LOAD SAMPLES button
+
     def __init__(self, snapshot, syx=None, audio=True, save_on_exit=None,
                  app=False):
         super().__init__()
         self.app = app                   # run by the portable app
         self.samples_added = []          # names LOAD SAMPLES wrote
-        self.title('digiemu — Digitakt mk1 emulator (unofficial)')
+        self.title(self.TITLE)
         self.configure(bg=BG)
-        self.canvas = tk.Canvas(self, width=PANEL_W, height=PANEL_H, bg=BG,
+        self.canvas = tk.Canvas(self, width=self.PANEL_W,
+                                height=self.PANEL_H, bg=BG,
                                 highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
 
@@ -246,11 +260,12 @@ class DigitaktPanel(tk.Tk):
         # how this was reported. Clamp it fully on-screen.
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        x = max(0, min(80, sw - PANEL_W))
-        y = max(0, min(60, sh - PANEL_H))
-        self.geometry('%dx%d+%d+%d' % (PANEL_W, PANEL_H, x, y))
-        print('[dtpanel] window %dx%d at +%d+%d on a %dx%d desktop'
-              % (PANEL_W, PANEL_H, x, y, sw, sh), flush=True)
+        pw, ph = self.PANEL_W, self.PANEL_H
+        x = max(0, min(80, sw - pw))
+        y = max(0, min(60, sh - ph))
+        self.geometry('%dx%d+%d+%d' % (pw, ph, x, y))
+        print('[dtpanel] %s window %dx%d at +%d+%d on a %dx%d desktop'
+              % (self.PRODUCT, pw, ph, x, y, sw, sh), flush=True)
 
         self.lift()
         self.attributes('-topmost', True)
@@ -276,11 +291,12 @@ class DigitaktPanel(tk.Tk):
         self._rr(16, 14, 1128, 58, 10, fill='#101318', outline=EDGE)
         # The project's own name, not the product's branding: no logo mark,
         # wordmark or tagline from the hardware.
-        c.create_text(46, 43, text='digiemu', fill='#f2f5f9',
-                      font=('Helvetica', 23, 'bold'), anchor='w')
-        c.create_text(170, 45, text='Digitakt mk1 emulator · unofficial, not '
-                      'affiliated with Elektron', fill=DIM,
-                      font=('Helvetica', 11), anchor='w')
+        # The subtitle sits UNDER the wordmark: beside it, Windows' wider
+        # Helvetica ran it into the AUDIO status at x=536.
+        c.create_text(46, 35, text='digiemu', fill='#f2f5f9',
+                      font=('Helvetica', 20, 'bold'), anchor='w')
+        c.create_text(48, 60, text=self.SUBTITLE, fill=DIM,
+                      font=('Helvetica', 9), anchor='w')
         self._rr(24, 88, W * SCALE + 28, H * SCALE + 28, 8,
                  fill='#05070a', outline='#39414d')
         c.create_image(SCREEN_X, SCREEN_Y, image=self.big, anchor='nw')
@@ -306,7 +322,9 @@ class DigitaktPanel(tk.Tk):
     # then PLAY.
     def _draw_audio_controls(self):
         c = self.canvas
-        self.audio_text = c.create_text(536, 43, text='AUDIO  starting',
+        # From x=240, past the wordmark: at 536 the live status ('AUDIO
+        # LIVE · 110 ms buffered · ...') ran under the MUTE button.
+        self.audio_text = c.create_text(240, 36, text='AUDIO  starting',
                                         fill=DIM, font=('Helvetica', 10),
                                         anchor='w')
         self.audio_btns = {}
@@ -320,6 +338,8 @@ class DigitaktPanel(tk.Tk):
             for item in (rect, txt):
                 c.tag_bind(item, '<Button-1>', lambda _e, f=fn: f())
             self.audio_btns[name] = (rect, txt)
+        if not self.SAMPLES:
+            return
         x, w = 1000, 128
         rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
         txt = c.create_text(x + w / 2, 43, text='LOAD SAMPLES', fill=TEXT,
@@ -381,7 +401,8 @@ class DigitaktPanel(tk.Tk):
         path = filedialog.asksaveasfilename(
             parent=self, defaultextension='.wav',
             filetypes=[('WAV audio', '*.wav')],
-            initialfile=time.strftime('digitakt-%Y%m%d-%H%M%S.wav'))
+            initialfile=time.strftime(self.PRODUCT.lower()
+                                      + '-%Y%m%d-%H%M%S.wav'))
         if not path:
             return
         audioout.write_wav(path, pcm, rate=emu.audio_cfg['rate'])
@@ -449,7 +470,7 @@ class DigitaktPanel(tk.Tk):
         c = self.canvas
         overflow = []
         for label, code in sorted(self.codes.items()):
-            spec = BUTTONS.get(label)
+            spec = self.BUTTONS.get(label)
             if spec is None:
                 overflow.append((label, code))
                 continue
@@ -486,7 +507,7 @@ class DigitaktPanel(tk.Tk):
         dev = getattr(self.emu, 'device', None)
         self.led_of = {code: led for led, code in
                        (getattr(dev, 'leds', None) or {}).items()}
-        page = BUTTONS['PAGE']
+        page = self.BUTTONS['PAGE']
         for i, led in enumerate(getattr(dev, 'page_leds', ()) or ()):
             cx, cy = page[0] + 13 + i * 22, page[1] + page[3] + 12
             dot = c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5,
@@ -495,7 +516,7 @@ class DigitaktPanel(tk.Tk):
         self._led_version = -1
 
         for label, code in self.enc_codes.items():
-            spec = ENCODERS.get(label)
+            spec = self.ENCODERS.get(label)
             if spec is None:
                 continue
             x, y, r = spec
@@ -858,9 +879,20 @@ class DigitaktPanel(tk.Tk):
         finally:
             self.after(40, self.tick)
 
+    def _names_ready(self):
+        """-> True once the controls can be named: the firmware's own table
+        has been read, or -- for a product whose image has no static table,
+        such as the Digitone -- the device file's measured labels are in
+        and the emulator is up."""
+        emu = self.emu
+        if getattr(emu, 'button_names', None):
+            return True
+        labels = getattr(getattr(emu, 'device', None), 'labels', None)
+        return bool(labels) and emu.ready.is_set()
+
     def _tick(self):
         emu = self.emu
-        if not self._named and getattr(emu, 'button_names', None):
+        if not self._named and self._names_ready():
             # MEASURED names win over the firmware's own table, and must
             # DISPLACE it: this layout places a button by its label, and the
             # panel-test table calls code 25 "PLAY" while the code that
@@ -877,7 +909,8 @@ class DigitaktPanel(tk.Tk):
                 names[code] = name
             self.codes = {n: c for c, n in names.items()}
             self.enc_codes = {n: c for c, n in
-                              getattr(emu, 'encoder_names', {}).items()}
+                              (getattr(emu, 'encoder_names', None)
+                               or {}).items()}
             # Set before building, not after: if a bind fails the surface is
             # drawn once and imperfect, rather than retried every 40ms for
             # the life of the window.
@@ -959,11 +992,11 @@ class _Parser(argparse.ArgumentParser):
         self.exit(USAGE_ERROR, '%s: error: %s\n' % (self.prog, message))
 
 
-def parse_args(argv):
+def parse_args(argv, prog='python -m emu.dtpanel',
+               description='The Digitakt mk1 front panel.'):
     """-> Namespace(snapshot, syx, save_on_exit, audio, app). Raises
     _Stop."""
-    ap = _Parser(prog='python -m emu.dtpanel',
-                 description='The Digitakt mk1 front panel.')
+    ap = _Parser(prog=prog, description=description)
     ap.add_argument('snapshot', nargs='?',
                     help='the snapshot to open (default: the firmware\'s own, '
                          'from emu.run.paths_for)')
@@ -1003,8 +1036,15 @@ def main(argv):
     on the card -- rebuild to see them; 64 (USAGE_ERROR) for arguments it
     cannot parse.
     """
+    return run(argv, DigitaktPanel)
+
+
+def run(argv, panel_cls, prog='python -m emu.dtpanel',
+        description='The Digitakt mk1 front panel.'):
+    """main() for any product's window class (emu/dnpanel.py passes the
+    Digitone's). Same arguments and return codes."""
     try:
-        args = parse_args(argv)
+        args = parse_args(argv, prog, description)
     except _Stop as stop:
         return stop.code
     # The panel is for using the instrument, so its +Drive persists: whatever
@@ -1025,8 +1065,8 @@ def main(argv):
         except SystemExit as exc:    # config.NotFound: no window to show it
             print('[dtpanel] %s' % exc, flush=True)
             return 1
-    app = DigitaktPanel(snap, syx=args.syx, audio=args.audio,
-                        save_on_exit=args.save_on_exit, app=args.app)
+    app = panel_cls(snap, syx=args.syx, audio=args.audio,
+                    save_on_exit=args.save_on_exit, app=args.app)
     try:
         app.mainloop()
     finally:
@@ -1037,7 +1077,8 @@ def main(argv):
     code = app.exit_code()
     if code == SAMPLES_ADDED and not args.app:
         print('[dtpanel] the snapshots predate the new samples: rebuild them '
-              'from the cold boot to see them on the Digitakt', flush=True)
+              'from the cold boot to see them on the %s'
+              % getattr(panel_cls, 'PRODUCT', 'Digitakt'), flush=True)
     return code
 
 

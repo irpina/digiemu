@@ -264,5 +264,45 @@ class DescriptorAddressTest(unittest.TestCase):
         self.assertEqual(c.tcd, 0xFC045400)   # the pointer at 0x80001200
 
 
+class SsrtTest(unittest.TestCase):
+    """SSRT starts a channel without touching its CSR: the Digitone's audio
+    handler moves its DSP's voices over channel 47 that way, and a bank that
+    watched only the CSRs left it spinning on DONE. A real Machine and a real
+    guest store, on the Python bank and (where the library has it) the
+    native one."""
+
+    def run_ssrt(self, native):
+        from emu.edma_sw import EDMA_SSRT, SoftwareBank
+        from emu.harness import Machine
+        m = Machine()
+        code, src, dst = 0x40000000, 0x40100000, 0x40100800
+        for addr in (code, src, TCD_BASE):
+            m.ensure(addr)
+        bank = SoftwareBank(m, native=native)
+        m.uc.mem_write(src, bytes(range(64)))
+        tcd = TCD_BASE + 47 * 0x20
+        m.uc.mem_write(tcd, struct.pack('>IHHIIIHHIHH', src, 0x0202, 4, 16, 0,
+                                        dst, 4, 4, 0, 4, 0))
+        # move.b #47,SSRT
+        m.uc.mem_write(code, b'\x13\xfc\x00\x2f' + struct.pack('>I', EDMA_SSRT))
+        m.uc.emu_start(code, code + 8)
+        bank.service(0)
+        self.assertEqual(bytes(m.uc.mem_read(dst, 64)), bytes(range(64)))
+        csr = struct.unpack('>H', m.uc.mem_read(tcd + CSR, 2))[0]
+        self.assertTrue(csr & CSR_DONE)
+        self.assertFalse(csr & CSR_START)
+        self.assertEqual(bank.ssrt_starts, 1)
+        # Bit 6 means every channel; nothing uses it, and it starts none.
+        m.uc.mem_write(code, b'\x13\xfc\x00\x40' + struct.pack('>I', EDMA_SSRT))
+        m.uc.emu_start(code, code + 8)
+        self.assertEqual(bank.ssrt_starts, 1)
+
+    def test_python_bank(self):
+        self.run_ssrt(native=False)
+
+    def test_default_bank(self):
+        self.run_ssrt(native=None)
+
+
 if __name__ == '__main__':
     unittest.main()
