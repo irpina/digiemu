@@ -1,0 +1,5 @@
+# The Unicorn patches are pinned by SHA-256 (tools/install-patched-unicorn.sh
+# and .ps1), so they must be checked out byte for byte on every OS. Git for
+# Windows' default core.autocrlf=true would otherwise turn them into CRLF, and
+# the installer then refuses every one.
+*.patch -text

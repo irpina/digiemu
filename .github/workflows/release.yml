@@ -18,6 +18,7 @@ on:
     tags: ['v*']
   pull_request:
     paths:
+      - '.gitattributes'
       - '.github/workflows/release.yml'
       - 'packaging/**'
       - 'patches/**'
@@ -48,6 +49,11 @@ jobs:
       run:
         shell: pwsh
     steps:
+      # The runner's git defaults to core.autocrlf=true. Off, the bundle's
+      # text files are byte for byte the tag's.
+      - name: Check out without line-ending conversion
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v7
 
       # The release interpreter: v0.1.0 was built on 3.11.

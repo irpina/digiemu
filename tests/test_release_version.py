@@ -67,5 +67,24 @@ class ReleaseVersionTest(unittest.TestCase):
                 self.assertIn('APP_VERSION', err)
 
 
+class PatchCheckoutTest(unittest.TestCase):
+    """The Unicorn patches are pinned by SHA-256, so git must never convert
+    their line endings: the release runner, like Git for Windows by default,
+    has core.autocrlf=true, and that broke the first Windows build."""
+
+    def test_patches_are_not_text(self):
+        import glob
+        import shutil
+        import subprocess
+        if shutil.which('git') is None or not os.path.isdir(os.path.join(REPO, '.git')):
+            self.skipTest('not a git checkout')
+        patches = sorted(glob.glob(os.path.join(REPO, 'patches', '*.patch')))
+        self.assertTrue(patches)
+        out = subprocess.run(['git', 'check-attr', 'text', '--'] + patches, cwd=REPO,
+                             capture_output=True, text=True, check=True).stdout
+        for line in out.splitlines():
+            self.assertTrue(line.endswith(': text: unset'), line)
+
+
 if __name__ == '__main__':
     unittest.main()
