@@ -1362,6 +1362,52 @@ class PanelLayoutTest(unittest.TestCase):
 
 
 @NEEDS_GUI
+class ScreenFrameTest(unittest.TestCase):
+    """The window's screen buffer holds nothing but whole firmware frames.
+
+    It once showed leftovers of earlier screens after a page change or a knob
+    turn, two ways: the OS's setPixel calls (for bitmaps that are not the
+    screen) were drawn over the frame, and each new frame cleared and
+    refilled the buffer in place while the window thread copied it. Measured
+    on a Digitakt flipping pages: 194 of 419 window reads were no frame the
+    firmware drew; 0 after the fix."""
+
+    def setUp(self):
+        from emu import gui, panel
+        self.gui, self.panel = gui, panel
+        self.W, self.H = gui.W, gui.H
+
+    def emulator(self, use_panel):
+        return types.SimpleNamespace(
+            use_panel=use_panel, fb=bytearray(self.W * self.H), _seen=set(),
+            stats={'px': 0, 'frames': 0}, captured=[], version=0, _frame_t=0.0,
+            _panel_latch=None, _last_panel=None, _panel_live=False)
+
+    def test_the_os_setpixel_never_reaches_the_screen(self):
+        emu = self.emulator(use_panel=True)
+        self.gui.Emulator._on_pixel(emu, 3, 4, 1, 0x1234)
+        self.assertEqual(emu.fb, bytearray(self.W * self.H))
+        self.assertEqual(emu.version, 0)
+        intro = self.emulator(use_panel=False)                 # the intro does
+        self.gui.Emulator._on_pixel(intro, 3, 4, 1, 0x1234)
+        self.assertEqual(intro.fb[4 * self.W + 3], 1)
+
+    def test_a_new_frame_replaces_the_buffer_whole(self):
+        emu = self.emulator(use_panel=True)
+        old = emu.fb
+        old[:] = b'\x01' * len(old)                   # a frame being copied
+        buf = bytearray(self.panel.SIZE)
+        buf[0] = 0x81                                 # two lit pixels
+        emu._panel_latch = bytes(buf)
+        self.gui.Emulator._publish_panel(emu, None)
+        self.assertIsNot(emu.fb, old)
+        self.assertEqual(old, b'\x01' * len(old))     # never touched in place
+        lit = {(i % self.W, i // self.W) for i, v in enumerate(emu.fb) if v}
+        self.assertEqual(lit, self.panel.lit(bytes(buf)))
+        self.assertEqual(emu.captured, [bytes(emu.fb)])
+
+
+@NEEDS_GUI
 class MasterVolumeTest(unittest.TestCase):
     """The knob's indicator spans its whole range, so a gain past unity never
     points back towards silent (it once wrapped: 1.5 read as 10 o'clock)."""

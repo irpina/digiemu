@@ -575,28 +575,38 @@ class Emulator(threading.Thread):
             return incompatible_message(self.snapshot, exc)
         return describe_error(exc)
 
+    def _on_pixel(self, x, y, val, bmp):
+        """The setPixel hook: the intro's screen, pixel by pixel."""
+        if self.use_panel:
+            # Once the OS owns the panel its framebuffer is the screen
+            # (_publish_panel). The OS still calls setPixel for bitmaps that
+            # are not the screen, and writing those into `fb` put stray
+            # pixels over the frame until the next one replaced it: leftovers
+            # of earlier screens after a page change or a knob turn.
+            return
+        self.stats['bmp'] = bmp
+        if (x, y) in self._seen and len(self._seen) > W * H // 2:
+            now = time.time()
+            self.captured.append(bytes(self.fb))    # snapshot the finished frame
+            self.stats['frames'] += 1              # coordinate repeat = new frame
+            self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
+            self._frame_t = now
+            self._seen.clear()
+            # Deliberately no emu_stop here any more. Under spin() a hook
+            # that stops the run early makes the instruction accounting a
+            # lie -- emu_start returns having executed fewer than it was
+            # asked for, the loop credits itself the full step, and every
+            # timer deadline drifts away from the instructions actually
+            # executed. The worker regains control every BUDGET
+            # instructions instead, which is soon enough for pause and
+            # stop to feel immediate.
+        self._seen.add((x, y))
+        self.fb[y * W + x] = val
+        self.stats['px'] += 1
+        self.version += 1
+
     def _run(self):
-        def on_pixel(x, y, val, bmp):
-            self.stats['bmp'] = bmp
-            if (x, y) in self._seen and len(self._seen) > W * H // 2:
-                now = time.time()
-                self.captured.append(bytes(self.fb))    # snapshot the finished frame
-                self.stats['frames'] += 1              # coordinate repeat = new frame
-                self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
-                self._frame_t = now
-                self._seen.clear()
-                # Deliberately no emu_stop here any more. Under spin() a hook
-                # that stops the run early makes the instruction accounting a
-                # lie -- emu_start returns having executed fewer than it was
-                # asked for, the loop credits itself the full step, and every
-                # timer deadline drifts away from the instructions actually
-                # executed. The worker regains control every BUDGET
-                # instructions instead, which is soon enough for pause and
-                # stop to feel immediate.
-            self._seen.add((x, y))
-            self.fb[y * W + x] = val
-            self.stats['px'] += 1
-            self.version += 1
+        on_pixel = self._on_pixel
 
         try:
             # NOTE: unblock=True also satisfies the frame semaphore, so the
@@ -1365,11 +1375,13 @@ class Emulator(threading.Thread):
             return
         self._panel_live = True
         self._last_panel = buf
-        fb = self.fb
-        for i in range(W * H):
-            fb[i] = 0
+        # A new buffer, swapped in whole: the window thread copies `fb`
+        # whenever it redraws, and clearing and refilling the old one in
+        # place let it copy a frame that was half the last and half this.
+        fb = bytearray(W * H)
         for x, y in px:
             fb[y * W + x] = 1
+        self.fb = fb
         now = time.time()
         self.captured.append(bytes(fb))
         self.stats['frames'] += 1
