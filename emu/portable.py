@@ -112,7 +112,7 @@ import time
 import traceback
 
 APP_NAME = 'digiemu'
-APP_VERSION = '0.1.0'
+APP_VERSION = '0.2.0'
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

@@ -2,9 +2,11 @@
 #
 #     powershell -NoProfile -ExecutionPolicy Bypass -File tools\build-windows.ps1 `
 #         -BuildVenv ..\.venv-build -SitePackagesFrom <site-packages with PyInstaller> `
-#         -Out ..\build-out [-Version 0.1.0]
+#         -Out ..\build-out [-Version x.y.z]
 #
 # -SitePackagesFrom is needed only when -BuildVenv does not exist yet.
+# -Version defaults to APP_VERSION in emu\portable.py, which the app shows
+# and stamps into firmware folders; a release tag must match it.
 #
 # Steps, each checked before the next:
 #  1. The build venv. If it is missing, make it with `python -m venv` from the
@@ -47,7 +49,7 @@ param(
   [Parameter(Mandatory = $true)][string]$BuildVenv,
   [string]$SitePackagesFrom,
   [Parameter(Mandatory = $true)][string]$Out,
-  [string]$Version = '0.1.0'
+  [string]$Version = ''
 )
 
 # Native tools write progress to stderr. Exit codes, not PowerShell's error
@@ -81,9 +83,14 @@ function One([string]$dir, [string]$pattern) {
   return $hits[0]
 }
 
+$Repo = Split-Path -Parent $PSScriptRoot
+if (-not $Version) {
+  $m = Select-String -LiteralPath (Join-Path $Repo 'emu\portable.py') -Pattern "^APP_VERSION = '([^']*)'" | Select-Object -First 1
+  if (-not $m) { Fail 'no APP_VERSION in emu\portable.py; pass -Version' }
+  $Version = $m.Matches[0].Groups[1].Value
+}
 if ($Version -notmatch '^\d{1,5}\.\d{1,5}\.\d{1,5}$') { Fail "-Version must be x.y.z, got '$Version'" }
 
-$Repo = Split-Path -Parent $PSScriptRoot
 $DevVenv = Join-Path $Repo '.venv'
 $DevSP = Join-Path $DevVenv 'Lib\site-packages'
 $RefDll = Join-Path $DevSP 'unicorn\lib\unicorn.dll'

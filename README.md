@@ -147,7 +147,7 @@ tracing tools), start with [DIGITAKT-MK1.md](DIGITAKT-MK1.md);
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build-windows.ps1 `
     -BuildVenv ..\.venv-build -SitePackagesFrom <site-packages with PyInstaller> `
-    -Out ..\build-out -Version 0.1.0
+    -Out ..\build-out
 ```
 
 The build is offline. It bundles the patched Unicorn from this checkout's
