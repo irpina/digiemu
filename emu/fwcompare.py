@@ -161,8 +161,21 @@ def pixel_diff(a, b):
 
 
 def first_divergence(frames_a, frames_b):
-    """-> the first emulated ms at which the frame on screen differs."""
-    times = sorted({t for t, _ in frames_a} | {t for t, _ in frames_b})
+    """-> the first emulated ms at which the frame on screen differs, or
+    None.
+
+    Counted from the moment both have drawn. Before its first frame a
+    session shows whatever its snapshot left on the LCD, which a Run does
+    not hold, and two builds booted separately resume at different points
+    of their refresh cycle: DT1_8_POLY_OSC and stock 1.53 drew the same
+    frames, the first ones 300 ms apart. A build that never draws differs
+    at the other's first frame."""
+    if not frames_a or not frames_b:
+        drawn = frames_a or frames_b
+        return drawn[0][0] if drawn else None
+    start = max(frames_a[0][0], frames_b[0][0])
+    times = sorted({t for t, _ in frames_a} | {t for t, _ in frames_b}
+                   | {start})
 
     def at(frames, t):
         cur = None
@@ -173,7 +186,7 @@ def first_divergence(frames_a, frames_b):
                 break
         return cur
     for t in times:
-        if at(frames_a, t) != at(frames_b, t):
+        if t >= start and at(frames_a, t) != at(frames_b, t):
             return t
     return None
 

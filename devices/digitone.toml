@@ -320,10 +320,14 @@ straps = { "0xEC09401B" = 0x08 }
 
 [memory]
 # The DDR the board has, from the bootstrap's own DDR controller setup
-# (tools/ddr_geometry.py: 13 row + 10 column bits, 8 banks, one x8 part).
+# (tools/ddr_geometry.py: 14 row + 10 column bits, 8 banks, one x8 part).
+# It was 64 until 2026-09-24, from a decode that counted ADDPINS from 15
+# rather than the controller's 16. The OS agrees on 128: a 64 MB sample
+# pool at 0x43BAF5F0 ("SAMPLE TIME: 64MB"), its stack at the very top,
+# 0x48000000, and ACR0 caching exactly 0x40000000-0x47FFFFFF.
 # The strict check decodes the SDRAM space with it (emu/strict.py), so the
 # firmware's cached and uncached views of the same memory are one memory.
-ddr_mb = 64
+ddr_mb = 128
 
 [audio]
 ssi_profile = "digitakt-mk1"

@@ -199,7 +199,7 @@ class Session:
             self.strict = strictmod.Strict(
                 m, clock=self.clock, cycles=cycles,
                 prescanned=(load, load + len(self.main_img)),
-                ddr_size=ddr or 64 * 1024 * 1024, **dict(strict))
+                ddr_size=ddr or 128 * 1024 * 1024, **dict(strict))
         if on_machine is not None:
             on_machine(self)
 

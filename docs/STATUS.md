@@ -73,7 +73,7 @@ Digitone mk1 OS 1.43, SHA-256
   - On the device the bootstrap passes the OS boot flags `0x00140000`,
     which the OS stores at `0x401F55C0` and tests in more than twenty
     places. The direct start passes 0.
-  - The firmware reaches its 64 MB of DDR through several aliases: its
+  - The firmware reaches its 128 MB of DDR through several aliases: its
     stack at `0x47FFxxxx`, and DMA buffers read through the uncached
     window at `0x48000000`. The app gives each alias memory of its own.
     Saved sessions showed no data written through two aliases of one

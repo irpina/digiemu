@@ -588,7 +588,7 @@ def container_section(syx_path, section_id):
 UPDATER_ID, UPDATER_IMAGE = 4, 0x80000408
 
 
-def boot(syx_path, bootstrap_section, main_image, *, ddr=64 * MB,
+def boot(syx_path, bootstrap_section, main_image, *, ddr=128 * MB,
          limit=400_000_000, chunk=2_000_000, on_machine=None, trace=None,
          mode=0, held=None, ui_card=4, straps=None, groups=6):
     """Run the bootstrap from its reset vector until it jumps into DDR.

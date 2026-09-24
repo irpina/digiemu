@@ -117,12 +117,14 @@ A cold boot from that handoff, through the intro, until the user interface
 has settled after the first boot's factory install, the same stages as the
 app's first run (`emu/bootstrap.py`). Two things are stricter than the app:
 
-- **The DDR model.** The Digitakt has one 64 MB DDR2 part
+- **The DDR model.** The Digitakt has one 128 MB DDR2 part
   (`devices/*.toml` `[memory] ddr_mb`, from the bootstrap's own controller
   setup), and the controller repeats it through `0x40000000-0x7FFFFFFF`.
-  The firmware uses that: its stack is at `0x47FFxxxx` and its DMA
-  buffers are read through the uncached window at `0x48000000`, which is
-  the same memory. The app gives every 1 MB of that space memory of its
+  The firmware uses that: its stack is at the top, `0x47FFxxxx`, and its
+  DMA buffers and 64 MB sample pool are read through the uncached window
+  at `0x48000000`, which is the same memory. (This was 64 MB until
+  2026-09-24, which folded the sample pool's upper part onto the OS: see
+  `docs/FINDINGS.md`, "Flash and DDR capacity".) The app gives every 1 MB of that space memory of its
   own. The check makes every alias the same bytes, as on the device
   (`harness.Machine.set_ddr`).
 - **Strict mode** (`emu/strict.py`) watches every stage. See the next
@@ -195,9 +197,12 @@ Strict mode also reports, without failing:
 The Digitakt renders audio 32 frames at a time, one half of the transmit
 buffer, every 0.667 ms. The run measures, for every render, the core
 cycles from its interrupt's entry to its `rte`, including interrupts that
-preempt it, and compares the worst with the period. On stock 1.53, one
-voice playing, the estimate is about 100,000 cycles of the 166,700 in each
-period at 250 MHz: a margin of about 38%.
+preempt it, and compares the worst with the period. On stock 1.53 the
+estimate is about 100,000 cycles of the 166,700 in each period at 250 MHz:
+a margin of about 38%. It is the same stopped, playing, and with all eight
+tracks sounding and every effect at full. The stock engine runs every voice
+every block (`docs/FINDINGS.md`, "Stock 1.53 under load"). So a custom
+build's margin is about what its own code adds.
 
 It is an estimate against the manual's tables, not a measurement of the
 device:
@@ -261,6 +266,15 @@ Each is counted in the report.
   corner, a saturated accumulator, is not modelled.
 - **Anything the script does not do.** The run and compare stages see
   only the keys the script presses.
+- **Sound, by default.** The emulated card has no `/factory` samples, so
+  the factory kit the check starts from plays silence. "Audio identical"
+  from the default tour compares silence with silence, and says nothing
+  about a change to how samples play. A build that changes playback needs
+  samples on the card and in the project. To put them there, add WAVs with
+  the app's LOAD SAMPLES, or use `emu.samples` and a rebuild. Then load
+  them from the key script: SETTINGS > SAMPLES > incoming, RIGHT > SELECT
+  ALL, LOAD TO PROJ. The CPU margin does not depend on it: the render costs
+  the same silent or sounding.
 
 ## Stock behaviour the check turned up
 
