@@ -1,0 +1,182 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds the Windows zip on a Windows runner, from
+# source (the patched Unicorn included). It runs tools/build-windows.ps1's
+# checks and frozen self-test, then attaches the zip and SHA256SUMS.txt to a
+# DRAFT release for the tag. Publishing stays a person's decision.
+#
+# The tag must match APP_VERSION in emu/portable.py (tools/ci/release_version.py):
+# bump it in a pull request, merge, then tag the merge commit. Notes come from
+# docs/releases/vX.Y.Z.md when that file exists; otherwise the draft holds a
+# placeholder to replace before publishing.
+#
+# A pull request that touches the build runs the same build and keeps the zip
+# as a workflow artifact, without releasing anything.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'patches/**'
+      - 'requirements.txt'
+      - 'requirements-build.txt'
+      - 'tools/build-windows.ps1'
+      - 'tools/install-patched-unicorn.ps1'
+      - 'tools/ci/release_version.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: windows-build
+    # VS 2022's C++ tools build Unicorn (install-patched-unicorn.ps1 uses the
+    # 'Visual Studio 17 2022' generator).
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      # The release interpreter: v0.1.0 was built on 3.11.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Version (a tag must match APP_VERSION)
+        id: version
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $v = python tools/ci/release_version.py --tag $env:GITHUB_REF_NAME
+          } else {
+            $v = python tools/ci/release_version.py
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "building digiemu $v"
+
+      - name: Project venv
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --quiet -r requirements.txt
+
+      # From source every time: the release carries exactly the patches in
+      # this commit. install-patched-unicorn.ps1 checks each patch's SHA-256
+      # and Unicorn's pinned commit, then runs emu.unicorn_compat.
+      - name: Patched Unicorn (MSVC)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-patched-unicorn.ps1
+
+      - name: Build venv (pinned PyInstaller)
+        run: |
+          python -m venv "$env:RUNNER_TEMP\bv"
+          & "$env:RUNNER_TEMP\bv\Scripts\python.exe" -m pip install --quiet -r requirements-build.txt
+
+      - name: Build, self-test, audit and zip
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\build-windows.ps1
+          -BuildVenv "$env:RUNNER_TEMP\bv" -Out "$env:RUNNER_TEMP\out"
+          -Version "${{ steps.version.outputs.version }}"
+
+      - name: Checksum and build info
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $out = "$env:RUNNER_TEMP\out"
+          $zip = "digiemu-win64-$v.zip"
+          $h = (Get-FileHash -Algorithm SHA256 -LiteralPath "$out\$zip").Hash.ToLower()
+          [IO.File]::WriteAllText("$out\SHA256SUMS.txt", "$h *$zip`n")
+          $dll = (Get-FileHash -Algorithm SHA256 -LiteralPath '.venv\Lib\site-packages\unicorn\lib\unicorn.dll').Hash.ToLower()
+          $py = python -c "import sys; print(sys.version.split()[0])"
+          [IO.File]::WriteAllText("$out\build-info.txt",
+            "unicorn_dll_sha256=$dll`npython=$py`nrunner=$env:ImageOS $env:ImageVersion`n")
+          Get-Content "$out\SHA256SUMS.txt", "$out\build-info.txt"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digiemu-win64-${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/out/digiemu-win64-*.zip
+            ${{ runner.temp }}/out/SHA256SUMS.txt
+            ${{ runner.temp }}/out/build-info.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Keep the build logs of a failed build
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs
+          path: |
+            ${{ runner.temp }}/out/*.log
+            ${{ runner.temp }}/out/selftest-*
+            ${{ runner.temp }}/out/work/digiemu/warn-digiemu.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: draft-release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: digiemu-win64-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          zip="dist/digiemu-win64-$VERSION.zip"
+          dll=$(sed -n 's/^unicorn_dll_sha256=//p' dist/build-info.txt)
+          py=$(sed -n 's/^python=//p' dist/build-info.txt)
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            if [ -f "docs/releases/$TAG.md" ]; then
+              cat "docs/releases/$TAG.md"
+            else
+              echo "_Draft: replace this with the notes for $TAG, or add docs/releases/$TAG.md before tagging._"
+            fi
+            echo
+            echo '## Checksum'
+            echo
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+            echo
+            echo '## Build'
+            echo
+            echo "Built by GitHub Actions from tag \`$TAG\` (commit \`${GITHUB_SHA:0:7}\`) with \`tools/build-windows.ps1\` on Python $py ([the run]($run)). The bundled \`unicorn.dll\` (SHA-256 \`$dll\`) is Unicorn 2.1.4 with the patches in \`patches/\`, built from source on the runner. **No Elektron firmware is included.** digiemu is not affiliated with or endorsed by Elektron."
+          } > notes.md
+          if gh release view "$TAG" --json isDraft --jq .isDraft > draft.txt 2>/dev/null; then
+            if [ "$(cat draft.txt)" != true ]; then
+              echo "release $TAG is already published; not replacing its files" >&2
+              exit 1
+            fi
+            gh release upload "$TAG" "$zip" dist/SHA256SUMS.txt --clobber
+            echo "updated the files of draft release $TAG"
+          else
+            gh release create "$TAG" "$zip" dist/SHA256SUMS.txt \
+              --draft --verify-tag --title "digiemu $VERSION" --notes-file notes.md
+            echo "drafted release $TAG"
+          fi

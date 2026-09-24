@@ -81,8 +81,8 @@ Digitone mk1 OS 1.43, SHA-256
 2. **Test the Windows app on the slow laptop:** Add, Play, LOAD SAMPLES,
    Rebuild, Reset, Cancel, and quitting mid-build. Measure the live-audio
    headroom there with `tools\capbench.py --tracks 8`.
-3. **Release plumbing:** a Windows CI job that builds the zip and attaches it
-   to a release, and code signing if digiemu is shared widely.
+3. **Code signing,** if digiemu is shared widely. Tagged releases are built
+   by `.github/workflows/release.yml` (README, "Releasing").
 4. **The second interrupt controller's forced reschedules.**
    `emu/intfrc.py` would cover them with `base=0xFC050000`,
    `first_vector=192`, but the RTOS switcher is sensitive, so measure before

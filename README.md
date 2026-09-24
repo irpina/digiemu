@@ -156,6 +156,25 @@ under it; the process then has the same protections as `python.exe`), and
 runs a self-test of both exes before it writes the zip. The script's header
 and [packaging/](packaging/) explain each step.
 
+### Releasing
+
+Releases are built by GitHub Actions
+([.github/workflows/release.yml](.github/workflows/release.yml)):
+
+1. Bump `APP_VERSION` in `emu/portable.py` in a pull request. Optionally add
+   the release notes as `docs/releases/vX.Y.Z.md`. Then merge it.
+2. Tag the merge commit and push the tag:
+   `git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
+3. On a Windows runner, the workflow checks that the tag matches
+   `APP_VERSION`, builds the patched Unicorn from source, and runs
+   `tools/build-windows.ps1` with the build tools pinned in
+   `requirements-build.txt`. It then attaches the zip and `SHA256SUMS.txt`
+   to a **draft** release for the tag.
+4. Review the draft and publish it.
+
+A pull request that changes the build runs the same build without
+releasing anything, and keeps the zip as a workflow artifact.
+
 ### Tests
 
 `tools/ci/run-tests.sh [PYTHON]` runs every test module on its own. Tests that

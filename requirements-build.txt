@@ -1,0 +1,9 @@
+# The Windows app's build tools, for the release workflow's build venv
+# (.github/workflows/release.yml, tools/build-windows.ps1). Pinned to the
+# versions the v0.1.0 zip was built with.
+pyinstaller==6.19.0
+pyinstaller-hooks-contrib==2026.4
+altgraph==0.17.5
+packaging==26.0
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
