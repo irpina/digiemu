@@ -37,6 +37,21 @@ Digitone mk1 OS 1.43, SHA-256
   live audio at 100% of real time: the second CPU runs the firmware's own FM
   voice code (`emu/dsplink.py`) on a thread of its own, one render per
   audio block, about 80% of a second core.
+- **Checking a build before it is flashed** (`emu.fwcheck`,
+  [FIRMWARE-CHECK.md](FIRMWARE-CHECK.md)). It runs the stages below and
+  compares each with the stock build:
+  - the container checks the device makes;
+  - the build's own bootstrap booting it from an emulated SPI flash
+    (`emu/bootrom.py`; on Digitakt 1.53 and Digitone 1.43 the OS it
+    leaves in DDR is byte-identical to the direct load);
+  - a cold boot from that handoff with the DDR's aliases modelled;
+  - strict mode (`emu/strict.py`): the MCF5441x memory map, no FPU,
+    exceptions, the watchdog;
+  - a key-scripted session timed in core cycles from the MCF54418RM
+    tables (`emu/cftiming.py`);
+  - a screen and audio comparison (`emu/fwcompare.py`).
+  Stock 1.53's audio render estimates at about 60% of each 0.667 ms
+  period at 250 MHz.
 - **Tests and CI.** Every test module runs on its own
   (`tools/ci/run-tests.sh`). None uses firmware bytes, and CI runs them
   with a content guard on every pull request.
@@ -53,6 +68,17 @@ Digitone mk1 OS 1.43, SHA-256
   are not modelled. The software-forced reschedules on the second controller
   (`INTFRCL2`) are not delivered either; PIT0 ticks and the idle-loop yield
   stand in for them.
+- **The app starts the OS directly, not through its bootstrap.** Two
+  consequences, both measured with `emu/bootrom.py`:
+  - On the device the bootstrap passes the OS boot flags `0x00140000`,
+    which the OS stores at `0x401F55C0` and tests in more than twenty
+    places. The direct start passes 0.
+  - The firmware reaches its 64 MB of DDR through several aliases: its
+    stack at `0x47FFxxxx`, and DMA buffers read through the uncached
+    window at `0x48000000`. The app gives each alias memory of its own.
+    Saved sessions showed no data written through two aliases of one
+    location. `emu.fwcheck` models both faithfully; the app does not
+    yet.
 - **First boot, faked wait.** During first boot, the main task's wait on
   `0x421cd074` is satisfied by the emulator. The firmware posts it through a
   path the semaphore scan does not know, so the main page draws during the
@@ -109,3 +135,13 @@ Digitone mk1 OS 1.43, SHA-256
    FUNC LEDs lit.
 10. **Upstream:** digikit would benefit from the card-identification (CID)
     fix, the INTC verification, and the ekFS index and sample format.
+11. **Start the app's OS the device's way:** the bootstrap's boot flags,
+    and the DDR model from the cold boot. Both need a new first-run
+    RECIPE (every folder rebuilds once) and a measurement that nothing the
+    app does today gets worse.
+12. **The firmware check, next:**
+    - run the update path (the bootstrap's receiver and the updater's
+      flash writes);
+    - a cache model, so a missing cache flush shows;
+    - a task-stack guard;
+    - checking the render timing against a device.

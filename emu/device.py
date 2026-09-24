@@ -79,7 +79,8 @@ class Device:
                  intro_unblocks_frame_sem=True, post_intro_ips=0,
                  labels=None, leds=None, page_leds=(), audio=None,
                  sysex_id=None, os_stream_id=None, card_ekfs=True,
-                 panel_kind=None, encoder_counts=1):
+                 panel_kind=None, encoder_counts=1, ddr_bytes=None,
+                 ui_card=None, straps=None):
         self.name = name
         self.short = short
         # [card] ekfs: whether the +Drive carries an ekFS sample volume that
@@ -135,6 +136,17 @@ class Device:
         # file): ssi_profile, request_hz, rate, sample_bits. None for a
         # device whose audio path has not been modelled.
         self.audio = dict(audio) if audio else None
+        # [memory] ddr_mb: the DDR the board has fitted, in bytes, for the
+        # strict check's memory model (harness.Machine.set_ddr). None when
+        # the device file does not say.
+        self.ddr_bytes = ddr_bytes
+        # [boot] ui_card: the front-panel card type the bootstrap expects
+        # the panel controller to report (emu/bootrom.py PanelLink). None
+        # when the device file does not say.
+        self.ui_card = ui_card
+        # [boot] straps: GPIO bytes the board fixes, {address: value}, read
+        # by the bootstrap (emu/bootrom.py BootHardware).
+        self.straps = dict(straps or {})
 
     def __repr__(self):
         return '<Device %s>' % self.name
@@ -159,6 +171,13 @@ class Device:
         if 0 <= channel < self.linear_channels and 0 <= bit < 8:
             return channel * 8 + bit + 1
         return None
+
+    def button_groups(self):
+        """-> how many button groups (wire channels) the panel reports: one
+        report per group, which is what a bootstrap asks for at power-on
+        (emu/bootrom.py PanelLink)."""
+        top = max((ch for ch, _bit in self.exceptions.values()), default=-1)
+        return max(top + 1, self.linear_channels)
 
     def encoder_channel(self, code):
         """-> the wire channel for an ENCODER rotation code, or None.
@@ -231,7 +250,49 @@ def load(path):
         card_ekfs=_bool(raw.get('card', {}), 'ekfs', True, path),
         panel_kind=panel.get('kind'),
         encoder_counts=_counts(panel, path),
+        ddr_bytes=_ddr(raw.get('memory', {}), path),
+        ui_card=_byte(raw.get('boot', {}), 'ui_card', path),
+        straps=_straps(raw.get('boot', {}), path),
     )
+
+
+def _straps(table, where):
+    """-> [boot] straps as {address: byte}. TOML keys are strings, so the
+    addresses are written in hex: straps = { "0xEC09401B" = 0x08 }."""
+    out = {}
+    for key, value in (table.get('straps') or {}).items():
+        try:
+            addr = int(str(key), 0)
+        except ValueError:
+            raise DeviceError('%s: [boot] straps key %r is not an address'
+                              % (where, key)) from None
+        if isinstance(value, bool) or not isinstance(value, int)                 or not 0 <= value <= 0xFF:
+            raise DeviceError('%s: [boot] straps %s must be a byte, got %r'
+                              % (where, key, value))
+        out[addr] = value
+    return out
+
+
+def _byte(table, key, where):
+    value = table.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) \
+            or not 0 <= value <= 0xFF:
+        raise DeviceError('%s: %s must be a byte, got %r' % (where, key, value))
+    return value
+
+
+def _ddr(table, where):
+    """-> [memory] ddr_mb in bytes, or None. The DDR controller takes one
+    part of 16 to 256 MB (MCF54418RM 1.7.11), so anything else is a typo."""
+    value = table.get('ddr_mb')
+    if value is None:
+        return None
+    if isinstance(value, bool) or value not in (16, 32, 64, 128, 256):
+        raise DeviceError('%s: [memory] ddr_mb must be 16, 32, 64, 128 or '
+                          '256, got %r' % (where, value))
+    return value << 20
 
 
 def _counts(panel, where):

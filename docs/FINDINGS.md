@@ -3935,3 +3935,134 @@ Also:
   in 18 groups, seeded from RAM (`emu/panelleds.py`).
 - PAGE (25) and FUNC (34) come from the firmware's key/LED table and have
   not been seen lit. **[O]**
+
+## The mk1 boot chain, run from the bootstrap (2026-09-24) **[V][D][O]**
+
+`emu/bootrom.py` runs container section id 2 from its reset vector on the
+emulated ColdFire, with the container in an emulated SPI flash at `0x80000`.
+On Digitakt 1.53 and Digitone 1.43 it reaches the OS entry `0x400004e8`, and
+MAIN OS in DDR is then byte-identical to the section. Nothing is written to
+the flash. **[V]**
+
+### The bootstrap image **[V]**
+
+- Section 2 is `[u32 length][image]`. The image links at `0x80000400`: its
+  first longwords are the initial SP `0x80010000`, the entry (`0x80000eaa`
+  on the Digitakt) and the version word read at `0x80000408` (`0x0300` on
+  Digitakt 1.53, `0x0200` on Digitone 1.43).
+- The entry is a function of one argument, a boot mode (`move.l $c(a7),d2`
+  after its prologue). Its switch at `0x80000f82` takes 0 and 1 to the
+  normal path (0 configures the debug module first with WDEBUG, which QEMU
+  aborts on at translation), 2, 3 and 5 to `halt` for a debugger, and 4 to
+  hardware init only. **[D]**
+- It points VBR at `0x80000000`, sets RAMBAR to `0x80000235` and copies its
+  tail to `0x8000f000`, from where it reads the flash while the updater is
+  loaded over its lower part.
+
+### What it touches, in order **[V]**
+
+1. The PLL: it waits on `PLL_SR` LOCK (bit 4).
+2. The crossbar, the pins, the interrupt controller.
+3. The DDR controller: it writes every control register (the 64 MB
+   geometry `tools/ddr_geometry.py` decodes), then polls `DDR_CR27`
+   (`0xFC0B806C`) for bit 3 up to 1000 times. If the bit never sets it
+   records a DDR failure (`0x80007706`) and later halts.
+4. PIT1 as a busy-wait delay.
+5. UART8, the front-panel link. See below.
+6. DSPI 0, where the flash is on **PCS1**: `9F` (RDID; the model answers
+   as an S25FL127S, `01 20 18 4D 00 80`), `06`, `E1` (DYB write), `05`,
+   then `03` reads. It reads the ELE3 header
+   and section table at `0x80000`, and 36 bytes at `0x380000`. That block
+   is erased in the emulated flash, and the boot does not depend on it.
+   What it holds on a device is **[O]**.
+
+The Digitakt's bootstrap then unpacks MAIN OS itself (`0x800005fe`) and
+calls its entry. The Digitone's loads the updater (section 4, raw: a
+longword with its entry `0x80000492`, a zero longword, the image at
+`0x80000408`) and calls that. The updater is a small RTOS with PIT0 as its
+tick (vector 205). It tests the DDR, unpacks MAIN OS and calls it.
+
+### The front panel at power-on **[V]**
+
+The bootstrap talks to the panel controller over UART8, one received byte
+per interrupt (vector 180, handler `0x800010de`, a 512-byte ring at
+`0x8000772e`):
+
+- `60 01`: report every key group. The panel sends `[0x20|group, mask]`
+  per group, the same button report the OS reads (`emu/panelin.py`). The
+  bootstrap keeps them as a 16-byte key map (`0x8000771e`) that its
+  startup checks test. The Digitakt waits for 6 groups, the Digitone for 7
+  (`0x7f`), and a Digitone Keys for 9 (`0x1ff`).
+- `70 00` / `71 00`: the UI card's identity, `[0x7_][type][fw minor][fw
+  patch][tested]`. The type must be 4 on the Digitakt and 8 on the Digitone
+  (0xA on a Keys), or the test report reads "WRONG CARD". **[D]**
+- `74 00`: the serial number the report prints as `SN:`.
+
+With no answer to `60 01` the bootstrap sets boot flags `0x60`, and the OS
+then parks at `0x4006932e` (Digitakt).
+
+### The boot flags **[V][D]**
+
+The OS entry stores its argument at `0x401F55C0` (Digitakt 1.53) and tests
+it in more than twenty places. With a panel answering, both products'
+bootstraps pass **`0x00140000`**. The emulator's direct start passes 0.
+
+- Bit 20 is always set (`bset #$14`).
+- Bit 18 is set when `0x80005c88` returns 0 (Digitakt). **[D]**
+- Bit 19 is the Keys (above). On the Digitone it comes from a board strap:
+  `0x80000416` reads bit 3 of GPIO `0xEC09401B` up to four times, and low
+  every time means Keys. **[D]**
+- `0x40 | 0x20` means no panel.
+- `0x20` alone follows a soft reset whose DDR mailbox holds `0xB0B0DADA`
+  at `0x48000000`.
+
+The Digitakt OS with `0x40` set skips its normal init (`0x400691da`) and
+ends in `bra.b` to itself at `0x4006932e`.
+
+### The DDR is used through its aliases **[V]**
+
+- DDR is 64 MB on both mk1 products (one x8 part, per the DDRMC setup
+  above). The controller repeats it through `0x40000000-0x7FFFFFFF`.
+- ACR0 is `0x4007E020`: `0x40000000-0x47FFFFFF` copyback, everything else
+  cache-inhibited (`CACR` `0xA50CE100`).
+- The firmware relies on the aliases:
+  - its initial stack is `0x48000000` (the top of `0x47Fxxxxx`, which is
+    `0x43Fxxxxx`);
+  - the SSI transmit buffer is at `0x4BA8F080`;
+  - it reads buffers through the uncached `0x4Bxxxxxx` window.
+- Saved sessions from the app, which gives every alias its own memory,
+  hold no data written through two aliases of one location.
+- Merging such a session's aliases into one memory broke the audio. Boot
+  the aliased model from reset instead: `Machine.set_ddr`, `emu.fwcheck`.
+
+### The container's checksums, mk1 **[V]**
+
+- The per-message checksum's constant K is the framing message's byte 8,
+  counting the F0, which is the OS-stream id (`0x05` on the Digitakt). "Byte
+  7" above counts from after the F0.
+- The data-message count is at bytes 12-14 of the framing message.
+- The content checksum covers the length the preamble's first longword
+  declares: 1,122,672 bytes on Digitakt 1.53, which stops short of the 4
+  padding bytes and the 32-byte trailer slot. Which length the device's
+  updater expects of a rebuilt container is **[O]**.
+
+### Two reads the stock firmware makes of unpopulated space **[V][O]**
+
+- Digitakt 1.53 reads `0x00000000` once during the cold boot
+  (`pc=0x40068f4c`).
+- Digitone 1.43 reads `0x0000012A` during a session (`pc=0x4009de70`),
+  steadily: 86,262 times in 8.3 emulated seconds of `emu.fwcheck`'s
+  default tour (2026-09-24). None during its boot.
+- Both are FlexBus space with no chip select configured, which the part's
+  bus monitor should end with a bus error. The devices evidently tolerate
+  them. Why is **[O]**.
+
+### The audio render's cost in core cycles **[V][D]**
+
+Measured with `emu/cftiming.py` (the MCF54418RM 3.3.5 tables; zero-wait
+memory, no pairs), on Digitakt 1.53 with one voice playing:
+- The render is the forced vector 191 (the SSI's `FORCE_VECTOR`).
+- It costs 100,300 cycles on average and 103,640 at worst, in each
+  0.667 ms period of 166,685 cycles at 250 MHz: a margin of 38%.
+- The transmit DMA's vector 174 takes about 40 cycles.
+- The CPU is 62% busy, at 1.57 cycles per instruction.

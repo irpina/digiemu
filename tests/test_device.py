@@ -123,6 +123,43 @@ class ParseTest(unittest.TestCase):
                 with self.assertRaises(device.DeviceError, msg=bad):
                     device.load(path)
 
+    def test_ddr_size(self):
+        """[memory] ddr_mb, for the strict check's DDR model: one part of
+        16 to 256 MB (MCF54418RM 1.7.11), absent meaning unknown."""
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(device.load(write_device(d)).ddr_bytes)
+        with tempfile.TemporaryDirectory() as d:
+            path = write_device(d, SYNTHETIC.replace(
+                '[panel]\n', '[memory]\nddr_mb = 64\n\n[panel]\n'))
+            self.assertEqual(device.load(path).ddr_bytes, 64 << 20)
+        for bad in ('48', '512', 'true'):
+            with tempfile.TemporaryDirectory() as d:
+                path = write_device(d, SYNTHETIC.replace(
+                    '[panel]\n', '[memory]\nddr_mb = %s\n\n[panel]\n' % bad))
+                with self.assertRaises(device.DeviceError, msg=bad):
+                    device.load(path)
+
+    def test_the_mk1_products_have_64_mb(self):
+        for name in ('digitakt.toml', 'digitone.toml'):
+            dev = device.load(os.path.join(DEVICES, name))
+            self.assertEqual(dev.ddr_bytes, 64 << 20, name)
+
+    def test_boot_panel_facts(self):
+        """[boot]: what the panel tells a bootstrap (emu/bootrom.py)."""
+        dt = device.load(os.path.join(DEVICES, 'digitakt.toml'))
+        dn = device.load(os.path.join(DEVICES, 'digitone.toml'))
+        self.assertEqual((dt.ui_card, dt.button_groups(), dt.straps),
+                         (4, 6, {}))
+        self.assertEqual((dn.ui_card, dn.button_groups(), dn.straps),
+                         (8, 7, {0xEC09401B: 0x08}))
+        for bad in ('ui_card = 300', 'straps = { "PORT" = 1 }',
+                    'straps = { "0x10" = 256 }'):
+            with tempfile.TemporaryDirectory() as d:
+                path = write_device(d, SYNTHETIC.replace(
+                    '[panel]\n', '[boot]\n%s\n\n[panel]\n' % bad))
+                with self.assertRaises(device.DeviceError, msg=bad):
+                    device.load(path)
+
 
 class WireMappingTest(unittest.TestCase):
     def setUp(self):

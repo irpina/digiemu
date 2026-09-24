@@ -47,6 +47,8 @@ from unicorn.m68k_const import (UC_CPU_M68K_CFV4E, UC_M68K_REG_A7,
 
 PAGE = 0x100000
 EXCP_RTE = 0x100
+# The DDR controller's address space (MCF54418RM Table 1-2).
+SDRAM_BASE, SDRAM_WINDOW = 0x40000000, 0x40000000
 
 # Exception-entry trampolines. See Machine.install_srtrap for why they exist.
 # Unicorn's m68k is in ColdFire mode, so: no predecrement MOVEM, no .W forms
@@ -97,11 +99,17 @@ def native_ff1(cpu=UC_CPU_M68K_CFV4E):
 class Machine:
     """A ColdFire machine with memory mapped on demand."""
 
-    def __init__(self, cpu=UC_CPU_M68K_CFV4E):
+    def __init__(self, cpu=UC_CPU_M68K_CFV4E, ddr=None):
         from emu.unicorn_compat import require_compatible_unicorn
         require_compatible_unicorn()
         self.uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
         self.uc.ctl_set_cpu_model(cpu)
+        # The DDR model: None maps every 1 MB page of the SDRAM space as
+        # memory of its own, which is how this emulator has always run. A
+        # size makes the space decode the way the controller does (see
+        # set_ddr): every alias of a location is that location.
+        self.ddr = None
+        self._ddr_buf = None
         # Same calls, less binding overhead per call; see emu/fastuc.py.
         from emu import fastuc
         fastuc.install(self.uc)
@@ -140,14 +148,66 @@ class Machine:
         # applies them the moment the page is mapped.
         self.pending = {}
         self.uc.hook_add(UC_HOOK_MEM_INVALID, self._fault)
+        if ddr is not None:
+            self.set_ddr(ddr)
 
     # -- memory ------------------------------------------------------------
+    def set_ddr(self, size, base=SDRAM_BASE, window=SDRAM_WINDOW):
+        """Back the SDRAM space with `size` bytes of DDR, repeated.
+
+        MCF54418RM Table 1-2 gives the DDR controller 0x4000_0000-0x7FFF_FFFF,
+        and 1.7.11 gives it one chip select and an 8-bit port: 16 to 256 MB.
+        The controller decodes only the address bits its part needs, so the
+        fitted memory repeats through the whole space, and firmware uses that
+        on purpose. Digitakt mk1 has 64 MB (tools/ddr_geometry.py, from the
+        bootstrap's own DDRMC writes); its OS keeps its stack at 0x47FFxxxx,
+        which is 0x43FFxxxx, and reads DMA buffers through 0x48000000 and up,
+        which ACR0 = 0x4007E020 leaves cache-inhibited: an uncached view of
+        the same memory.
+
+        Without this every 1 MB page of the space is memory of its own, so a
+        write through one alias is invisible through another: a DMA buffer
+        filled through the cached view reads as zeros through the uncached
+        one. With it, each page is mapped onto one shared host buffer at its
+        physical offset (Unicorn's mem_map_ptr), so all aliases are the same
+        bytes, as on the device.
+
+        Must be called before any page of the window is mapped."""
+        import ctypes
+        import mmap
+        if size <= 0 or size & (size - 1) or size % PAGE:
+            raise ValueError('DDR size must be a power of two, whole pages')
+        clash = [b for b in self.mapped if base <= b < base + window]
+        if clash:
+            raise RuntimeError('set_ddr after pages of the SDRAM window were '
+                               'mapped (%s)' % ', '.join(hex(b) for b in clash[:4]))
+        # Anonymous memory: zeroed and page-aligned, which the engine's TLB
+        # needs (a ctypes buffer is neither guaranteed aligned).
+        self._ddr_buf = mmap.mmap(-1, size)
+        self._ddr_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._ddr_buf))
+        self.ddr = (base, size, window)
+
+    def ddr_physical(self, addr):
+        """-> the offset into DDR that `addr` decodes to, or None."""
+        if self.ddr is None:
+            return None
+        base, size, window = self.ddr
+        if base <= addr < base + window:
+            return (addr - base) % size
+        return None
+
     def ensure(self, addr):
         base = addr & ~(PAGE - 1)
         if base in self.mapped:
             return
         try:
-            self.uc.mem_map(base, PAGE)
+            off = self.ddr_physical(base)
+            if off is None:
+                self.uc.mem_map(base, PAGE)
+            else:
+                from unicorn import UC_PROT_ALL
+                self.uc.mem_map_ptr(base, PAGE, UC_PROT_ALL,
+                                    self._ddr_ptr + off)
             self.mapped.add(base)
         except UcError:
             return
@@ -379,8 +439,21 @@ class Machine:
         from the hot path is roughly a 2-4x wall-clock win on decompression-
         and allocator-loop-heavy stretches of boot.
         """
+        # Each hook first checks the opcode is still there: code can be
+        # replaced at run time (the Digitakt bootstrap loads its updater over
+        # itself, emu/bootrom.py), and a hook acting on whatever instruction
+        # now sits at its address would skip it.
+        def still(uc, addr, lo, hi):
+            try:
+                w = struct.unpack('>H', uc.mem_read(addr, 2))[0]
+            except UcError:
+                return False
+            return lo <= w <= hi
+
         def make_ff1(reg):
             def h(uc, addr, size, data):
+                if not still(uc, addr, 0x04C0, 0x04C7):
+                    return
                 v = uc.reg_read(reg) & 0xFFFFFFFF
                 out = 32 if v == 0 else 31 - v.bit_length() + 1
                 uc.reg_write(reg, out)
@@ -390,6 +463,8 @@ class Machine:
 
         def make_movec(addr, w):
             def h(uc, addr_, size, data):
+                if not still(uc, addr, w, w):
+                    return
                 ext = struct.unpack('>H', uc.mem_read(addr + 2, 2))[0]
                 rc = ext & 0x0FFF
                 reg = UC_M68K_REG_D0 + ((ext >> 12) & 7)
@@ -505,8 +580,13 @@ class Machine:
         no matter how long the boot was left going. TRAP #N is 2 bytes
         (0x4E40-0x4E4F), so the frame has to resume at PC+2.
         """
-        handler = struct.unpack('>I', self.uc.mem_read(VBR + vec * 4, 4))[0]
-        if handler == 0 or handler >= 0x48000000:
+        # The table the firmware pointed VBR at (MOVEC 0x801), else the OS's.
+        # A handler has to be code: in the cached DDR or the SRAM (where the
+        # bootstrap runs, emu/bootrom.py); anything else is an empty slot.
+        vbr = self.ctlregs.get(0x801, VBR)
+        handler = struct.unpack('>I', self.uc.mem_read(vbr + vec * 4, 4))[0]
+        if handler == 0 or not (handler < 0x48000000
+                                or 0x80000000 <= handler < 0x80010000):
             return False
         pc = self.uc.reg_read(UC_M68K_REG_PC)
         if from_instruction:

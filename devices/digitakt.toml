@@ -322,6 +322,19 @@ columns = 4
 # (above ~3 kHz the render starves the UI), records the output and plays it
 # back afterwards at 48 kHz -- correct pitch and timing, heard late. The
 # sequencer's time base is this clock, so it slows with it.
+[boot]
+# The front-panel card type the bootstrap asks the panel controller for
+# (`70 00`) and checks: anything else is its "WRONG CARD". Digitakt: 4.
+# emu/bootrom.py answers with it when it runs the bootstrap.
+ui_card = 4
+
+[memory]
+# The DDR the board has, from the bootstrap's own DDR controller setup
+# (tools/ddr_geometry.py: 13 row + 10 column bits, 8 banks, one x8 part).
+# The strict check decodes the SDRAM space with it (emu/strict.py), so the
+# firmware's cached and uncached views of the same memory are one memory.
+ddr_mb = 64
+
 [audio]
 ssi_profile = "digitakt-mk1"
 request_hz = 48000

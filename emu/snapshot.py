@@ -295,7 +295,22 @@ def _validate_blob(blob):
         raise RuntimeError("invalid checkpoint manifest")
 
 
-def _validate_manifest(saved, current):
+# Manifest keys a resume may change: the host shortcuts that are bit-exact
+# (emu/softfloat.py, emu/hle.py) leave guest state exactly as the firmware's
+# own routines would, so a snapshot saved with them on resumes correctly
+# with them off. Timing and strict runs need them off. The DDR model is not
+# one of these (see _restore_aliased).
+RELAXABLE = frozenset(('softfloat', 'bitmap'))
+
+
+def _validate_manifest(saved, current, relax=()):
+    relax = frozenset(relax)
+    if not relax <= RELAXABLE:
+        raise ValueError('only %s may be relaxed, not %s'
+                         % (sorted(RELAXABLE), sorted(relax - RELAXABLE)))
+    if relax and isinstance(saved, dict) and isinstance(current, dict):
+        saved = {k: v for k, v in saved.items() if k not in relax}
+        current = {k: v for k, v in current.items() if k not in relax}
     if saved != current:
         raise RuntimeError(
             "checkpoint build manifest mismatch: saved=%r current=%r" % (saved, current)
@@ -377,11 +392,41 @@ def restore(path):
     return m, blob["extra"], blob["regs"]
 
 
-def restore_into(machine, path, st=None, components=None, manifest=None, deferred=None):
+def _restore_aliased(machine, pages):
+    """Write saved pages into a Machine whose DDR aliases (Machine.set_ddr).
+
+    Pages that decode to the same DDR are one memory, so a snapshot saved
+    under the DDR model holds identical copies of them; each group is
+    written once. A snapshot saved WITHOUT the model can hold different
+    data in two aliases of one location, which no merge can make right
+    (measured: merging them left the audio engine reading a buffer another
+    alias had overwritten), so it is refused. Such a snapshot is a
+    different machine: boot the firmware from reset with the model on
+    (emu/fwcheck.py does)."""
+    groups = {}
+    for base, comp in pages.items():
+        off = machine.ddr_physical(base)
+        groups.setdefault(base if off is None else ("ddr", off), []).append(base)
+    for key, bases in groups.items():
+        bases.sort()
+        data = zlib.decompress(pages[bases[0]])
+        for other in bases[1:]:
+            if zlib.decompress(pages[other]) != data:
+                raise RuntimeError(
+                    "checkpoint pages 0x%08x and 0x%08x are one DDR location "
+                    "but hold different data: the snapshot was not saved "
+                    "under the DDR model" % (bases[0], other))
+        machine.uc.mem_write(bases[0], data)
+
+
+def restore_into(machine, path, st=None, components=None, manifest=None, deferred=None,
+                 relax=()):
     """Load a snapshot onto an already configured Machine.
 
     ``deferred`` permits construction-dependent host components (such as
     Timers) to claim their saved state after guest state is installed.
+    ``relax`` names manifest keys (only those in RELAXABLE) that may differ
+    from the ones the snapshot was saved with.
     """
     blob = _load_blob(path)
     if deferred is not None and not isinstance(deferred, DeferredComponentRestore):
@@ -389,7 +434,7 @@ def restore_into(machine, path, st=None, components=None, manifest=None, deferre
     if blob.get("manifest") is not None:
         if manifest is None:
             raise RuntimeError("checkpoint requires a build manifest")
-        _validate_manifest(blob["manifest"], manifest)
+        _validate_manifest(blob["manifest"], manifest, relax)
     saved_components = blob.get("components", {})
     supplied = components or {}
     deferred_names = deferred.names if deferred is not None else set()
@@ -404,8 +449,11 @@ def restore_into(machine, path, st=None, components=None, manifest=None, deferre
         _validate_component_state(state, name, supplied.get(name))
     for base in blob["all_mapped"]:
         machine.ensure(base)
-    for base, comp in blob["pages"].items():
-        machine.uc.mem_write(base, zlib.decompress(comp))
+    if getattr(machine, "ddr", None) is not None:
+        _restore_aliased(machine, blob["pages"])
+    else:
+        for base, comp in blob["pages"].items():
+            machine.uc.mem_write(base, zlib.decompress(comp))
     machine.mmio.update(blob["mmio"])
     machine.ctlregs.update(blob["ctlregs"])
     machine.ff1_count = blob["ff1_count"]

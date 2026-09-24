@@ -62,7 +62,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           deferred_components=(), idle_yield=20000, fast_idle=False,
           ssi0_request_hz=None,
           ssi0_legacy_upgrade=False, ssi0_profile=None,
-          modeled_vectors=(208,), dsp_cpu=True):
+          modeled_vectors=(208,), dsp_cpu=True, manifest_relax=(),
+          ddr=None):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     dsp_cpu: on a Digitone (an image with the DSP boot task), run its
@@ -129,6 +130,11 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     semaphore by itself once the intro's exit path is reached, which covers a
     run that executes the intro; `recheck` covers a run resumed from a
     snapshot taken after it.
+
+    manifest_relax: manifest keys (emu.snapshot.RELAXABLE: softfloat,
+    bitmap) allowed to differ from the snapshot's. Both shortcuts are
+    bit-exact, so a snapshot saved with them resumes faithfully without
+    them, which is what a timing or strict run needs (emu/fwcheck.py).
 
     softfloat=True runs the firmware's float routines natively instead of
     emulating them. It is OFF by default: it is bit-exact but changes
@@ -270,12 +276,20 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     # value none of them chose.
     if tuple(modeled_vectors) != (208,):
         checkpoint_manifest['modeled_vectors'] = tuple(sorted(modeled_vectors))
-    m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
+    # ddr: the DDR size in bytes, to decode the SDRAM space as the device
+    # does (harness.Machine.set_ddr). Recorded only when set, like ssi0_dma.
+    if ddr:
+        checkpoint_manifest['ddr'] = int(ddr)
+    m = Machine(ddr=ddr); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
     ev = {'tasks': [], 'prints': [], 'setpixel': 0, 'pxcopy': 0,
           'switch': collections.Counter(), 'switch_seq': [],
           'uart_out': bytearray(), 'satisfied': 0, 'satisfied_by': collections.Counter(),
           'satisfied_by_sem': collections.Counter(),
-          'depack_clamps': 0}
+          'depack_clamps': 0,
+          # Uses of the host stand-ins that are not firmware behaviour, for
+          # emu/strict.py's report: the flash-read shortcut, the completion
+          # semaphore patch, the idle-loop reschedule.
+          'stand_ins': collections.Counter()}
     inq = collections.deque(send)
     with open(config.main_image(), 'rb') as fh:
         main_img = fh.read()
@@ -368,6 +382,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             at(addr, fn)
 
     def flash_read(uc, a, s, d):
+        ev['stand_ins']['flash_read'] += 1
         sp = uc.reg_read(UC_M68K_REG_A7)
         ret, off, ln, dest = struct.unpack('>IIII', uc.mem_read(sp, 16))
         if ln and dest and off + ln <= len(flash):
@@ -397,7 +412,10 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             ev['switch_seq'].append(tcb)
 
     at(profile.flash_read, flash_read)
-    at(profile.pend_call, lambda uc,a,s,d: uc.mem_write(profile.completion_sem, struct.pack('>I',1)))
+    def completion_kick(uc, a, s, d):
+        ev['stand_ins']['completion_sem'] += 1
+        uc.mem_write(profile.completion_sem, struct.pack('>I', 1))
+    at(profile.pend_call, completion_kick)
     maybe_at(profile.task_create, task_create)
     at(PRINT, do_print)
     maybe_at(profile.set_pixel, lambda uc,a,s,d: ev.__setitem__('setpixel', ev['setpixel']+1))
@@ -469,6 +487,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             spins['n'] += skip
             stepper.idle_skip(skip)
         if spins['n'] // idle_yield != before:
+            ev['stand_ins']['idle_yield'] += 1
             m.raise_vector(32)
     for spin_addr in db.find_idle_spins(main_img, db.MAIN_LOAD):
         at(spin_addr, do_halt)
@@ -656,7 +675,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     # spin/run_until enforce completion before entering Unicorn.
     m._checkpoint_deferred_restore = deferred_restore
     pc = restore_into(m, snapshot, st, components=checkpoint_components,
-                      manifest=checkpoint_manifest, deferred=deferred_restore)
+                      manifest=checkpoint_manifest, deferred=deferred_restore,
+                      relax=manifest_relax)
     if ssi0 is not None:
         if ssi0_legacy_upgrade:
             assert ssi0_request_hz is not None
@@ -971,6 +991,11 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
     block late rather than on the instruction it was due. That changes the
     instruction stream and so the boot digest. Use it for interactive running
     -- the GUI does -- and never for a determinism or pass/fail claim.
+
+    `fast` may also be a stepper object with the same `run(pc, step)`, such
+    as emu.cftiming.CycleStepper, whose steps are core cycles: the timers
+    passed in `pits` must then count cycles too (their `ips` set to the
+    core clock).
     """
     deferred = getattr(m, '_checkpoint_deferred_restore', None)
     if deferred is not None:
@@ -1006,7 +1031,8 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
         m.halt_vec = None
         try:
             if fast:
-                executed = _fast_stepper(m).run(pc, step)
+                stepper = fast if hasattr(fast, 'run') else _fast_stepper(m)
+                executed = stepper.run(pc, step)
             else:
                 m.uc.emu_start(pc, 0, count=step)
                 executed = step

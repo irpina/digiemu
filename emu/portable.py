@@ -26,6 +26,8 @@ the GIL. So the same exe dispatches hidden modes:
     digiemu.exe                              the Tk launcher
     digiemu.exe --worker first-run <fwdir>   builds; JSON lines on stdout
     digiemu.exe --worker panel <fwdir>       opens the panel for that folder
+    digiemu.exe --worker check <checkdir>    checks a build (emu.fwcheck)
+                                             before it goes on a device
 
 `sys.executable -m` does not exist in a frozen exe, so only development
 spawns `python -m emu.portable`. Workers run with CREATE_NO_WINDOW and opt
@@ -77,8 +79,10 @@ running if the child died) and shows what failed, while the list stays
 usable.
 
 EXIT CODES (the CLI modes and the workers):
-    0  ok (--add of a folder that is already set up: 'already set up')
-    1  a build, the emulator or the panel failed
+    0  ok (--add of a folder that is already set up: 'already set up';
+       --check: the build passed)
+    1  a build, the emulator or the panel failed; --check: the build
+       failed, or the check could not finish
     2  usage error; from the panel worker: the session could not be saved
     3  not ready: set it up or rebuild it first (--add: Rebuild needed)
     4  untested release (--add) or --reset without --yes
@@ -137,8 +141,34 @@ STEP_TITLES = {
 STEP_WEIGHTS = {'copy': 0.0, 'extract': 0.0, 'card': 0.0,
                 'ladder': 0.55, 'intro': 0.05, 'settle': 0.40}
 
+# The firmware check (emu/fwcheck.py), per build: these stages, then the
+# comparison when there is a stock build to compare with.
+CHECK_STAGES = ('container', 'prepare', 'bootloader', 'boot', 'run')
+CHECK_TITLES = {
+    'container': 'Reading the .syx',
+    'prepare': 'Preparing',
+    'bootloader': 'Running its bootloader',
+    'boot': 'Cold boot, strict',
+    'run': 'Playing the key script',
+    'compare': 'Comparing screens and sound',
+}
+CHECK_ROLES = {'baseline': 'Stock', 'build': 'Build', 'compare': ''}
+# Seconds per stage on the reference desktop, for the bar and the estimate.
+# Digitakt measured (2026-09-24); the Digitone's timed run is extrapolated
+# from its untimed one (the cycle clock runs about 64x slower than real time).
+CHECK_SECONDS = {
+    'dt1': {'container': 1, 'prepare': 1, 'bootloader': 9, 'boot': 75,
+            'run': 50, 'run-timed': 340, 'compare': 2},
+    'dn1': {'container': 1, 'prepare': 1, 'bootloader': 13, 'boot': 150,
+            'run': 90, 'run-timed': 540, 'compare': 2},
+}
+CHECK_REQUEST = 'request.json'
+CHECK_LOG = 'check.log'
+CHECK_SUMMARY = 'summary.txt'
+
 # A new firmware folder grows to ~1.3 GB: a 0.95 GB card (not sparse on
-# NTFS), snapshots and sections.
+# NTFS), snapshots and sections. A check needs the same while one build's
+# work folder exists (emu.fwcheck.run_check keep_work=False).
 MIN_FREE_BYTES = 1536 * 1024 * 1024
 # Long paths are off by default on Windows (MAX_PATH 260) and Tcl's own file
 # I/O may not honour longPathAware either; keep a margin under it.
@@ -370,6 +400,13 @@ def _release():
     mod = sys.modules.get('emu.release')
     if mod is None:
         from emu import release as mod
+    return mod
+
+
+def _fwcheck():
+    mod = sys.modules.get('emu.fwcheck')
+    if mod is None:
+        from emu import fwcheck as mod
     return mod
 
 
@@ -1268,11 +1305,10 @@ def untested_text(rel):
             'about a minute.' % (release_summary(rel), rel.product))
 
 
-def plan_add(src, home=None):
-    """Identify a .syx and work out where it goes. Refused if it is not an
-    Elektron OS file or not a product this version runs."""
+def identify_supported(src):
+    """-> the release of the .syx at `src`, refused (Refused) when it is not
+    an Elektron OS file or not a product this version runs."""
     rmod = _release()
-    src = os.path.abspath(src)
     if not os.path.isfile(src):
         raise Refused('No such file: %s' % src)
     try:
@@ -1291,6 +1327,15 @@ def plan_add(src, home=None):
                       '%s yet. It runs the %s.'
                       % (rel.product, rel.version, rel.product, SUPPORTED),
                       EXIT_UNSUPPORTED)
+    return rel
+
+
+def plan_add(src, home=None):
+    """Identify a .syx and work out where it goes. Refused if it is not an
+    Elektron OS file or not a product this version runs."""
+    rmod = _release()
+    src = os.path.abspath(src)
+    rel = identify_supported(src)
     try:
         fwdir = firmware_dir(rel.slug, home)
     except ValueError as exc:
@@ -2198,6 +2243,352 @@ def run_selftest(timeout=SELFTEST_TIMEOUT):
     return summarize_selftest(report, rc, err or '', timed_out, timeout)
 
 
+# --- the firmware check ----------------------------------------------------------
+#
+# emu.fwcheck runs a build the way the device would -- its container, its own
+# bootloader, a strict cold boot, a scripted session -- and, given the stock
+# build, the same on that and a comparison. It runs Unicorn for minutes, so
+# like a build it runs in a worker, `--worker check <checkdir>`, reading the
+# request the launcher wrote there and writing its report next to it:
+#
+#     <APP_ROOT>/checks/<time>-<file>/request.json   what to check
+#                                     check.log      everything it printed
+#                                     report.json    every fact (emu.fwcheck)
+#                                     summary.txt    the verdict in lines
+#                                     compare/       screens that differ
+#
+# Each build's work folder (a .syx copy, sections, a card image and
+# snapshots: over a gigabyte) goes as soon as that build is checked.
+
+@dataclasses.dataclass
+class CheckPlan:
+    source: str
+    release: object
+    baselines: list     # baseline_candidates
+    errors: list
+
+
+def checks_root(home=None):
+    return os.path.join(app_root(home), 'checks')
+
+
+def baseline_candidates(rel, home=None):
+    """-> the firmware set up here that can stand for the stock build when
+    checking `rel`: the same product, a release digiemu knows (an untested
+    one may itself be custom), its .syx present. The same version first.
+    Each {'label', 'syx', 'version', 'same_version'}.
+
+    A folder a worker holds is left out: its firmware.json is not read
+    while a worker may be renaming it (status_of)."""
+    short = getattr(getattr(rel, 'device', None), 'short', None)
+    out = []
+    for d in list_firmware_dirs(home):
+        if lock_holder(d):
+            continue
+        try:
+            paths = open_paths(d)
+            state = read_state(paths)
+        except BaseException:                   # noqa: BLE001 -- a broken folder
+            continue
+        r = state.get('release') or {}
+        if r.get('device') != short or r.get('status') in ('untested',
+                                                           'unsupported'):
+            continue
+        if not os.path.isfile(paths.syx):
+            continue
+        out.append({'label': r.get('label') or os.path.basename(d),
+                    'syx': paths.syx, 'version': r.get('version'),
+                    'same_version': r.get('version') == rel.version})
+    out.sort(key=lambda c: (not c['same_version'], c['label']))
+    return out
+
+
+def check_preflight(home=None):
+    """-> errors that stop a check before it starts: nowhere to write, or
+    too little room for one build's work folder."""
+    root = checks_root(home)
+    if not is_writable(root):
+        return ['digiemu cannot write to %s. Move the digiemu folder somewhere '
+                'you can write to (not Program Files), or use %s.'
+                % (app_root(home), local_app_home())]
+    try:
+        free = shutil.disk_usage(_existing_ancestor(root)).free
+    except OSError:
+        return []
+    if free < MIN_FREE_BYTES:
+        return ['Not enough free disk space: a check needs about %s while it '
+                'runs, and the drive has %s free.'
+                % (human_size(MIN_FREE_BYTES), human_size(free))]
+    return []
+
+
+def plan_check(src, home=None):
+    """Identify a build to check. Refused (Refused) like Add: the check
+    boots it, so it must be a product this version runs."""
+    src = os.path.abspath(src)
+    rel = identify_supported(src)
+    return CheckPlan(src, rel, baseline_candidates(rel, home),
+                     check_preflight(home))
+
+
+def new_check_dir(src, home=None, stamp=None):
+    """-> a new, empty folder for one check: checks/<time>-<file name>."""
+    stamp = stamp or time.strftime('%Y%m%d-%H%M%S')
+    stem = os.path.splitext(os.path.basename(src))[0].lower()
+    stem = re.sub(r'[^a-z0-9.-]+', '-', stem).strip('-.')[:40] or 'build'
+    base = os.path.join(checks_root(home), '%s-%s' % (stamp, stem))
+    path, n = base, 1
+    while True:
+        try:
+            os.makedirs(path)
+            return path
+        except FileExistsError:
+            n += 1
+            path = '%s-%d' % (base, n)
+
+
+def write_check_request(checkdir, syx, baseline, timing, device):
+    with open(os.path.join(checkdir, CHECK_REQUEST), 'w', encoding='utf-8',
+              newline='\n') as fh:
+        json.dump({'syx': os.path.abspath(syx),
+                   'baseline': os.path.abspath(baseline) if baseline else None,
+                   'timing': bool(timing), 'device': device,
+                   'app_version': APP_VERSION}, fh, indent=1)
+
+
+def check_plan_seconds(device, baseline, timing):
+    """-> [((role, stage), expected seconds)] in the order a check runs."""
+    secs = CHECK_SECONDS.get(device) or CHECK_SECONDS['dt1']
+    roles = (('baseline',) if baseline else ()) + ('build',)
+    plan = [((role, stage), secs['run-timed' if timing and stage == 'run'
+                                 else stage])
+            for role in roles for stage in CHECK_STAGES]
+    if baseline:
+        plan.append((('compare', 'compare'), secs['compare']))
+    return plan
+
+
+def check_minutes(device, baseline, timing):
+    """-> the expected length of a check, in whole minutes."""
+    total = sum(s for _key, s in check_plan_seconds(device, baseline, timing))
+    return max(1, int(round(total / 60.0)))
+
+
+class CheckProgress:
+    """A check's records -> where it is, an overall fraction and each
+    stage's verdict so far.
+
+    The fraction goes by expected seconds (CHECK_SECONDS). Inside the stage
+    running now it creeps on with the clock, to at most 95% of that stage's
+    share, so a two-minute boot does not look stuck. It never goes back."""
+
+    def __init__(self, device, baseline, timing):
+        plan = check_plan_seconds(device, baseline, timing)
+        self.keys = [key for key, _s in plan]
+        self.weights = [s for _key, s in plan]
+        self.total = float(sum(self.weights))
+        self.done = 0.0
+        self.current = None             # (index, started) of the running stage
+        self.role = self.step = None
+        self.verdicts = []              # (role, stage, state, passed)
+        self.result = None
+
+    def feed(self, rec, now=None):
+        now = time.monotonic() if now is None else now
+        kind = rec.get('kind')
+        if kind == 'result':
+            self.result = rec
+            return
+        data = rec.get('data') if isinstance(rec.get('data'), dict) else {}
+        key = (data.get('role'), rec.get('step'))
+        if key not in self.keys:
+            return
+        i = self.keys.index(key)
+        if kind == 'start':
+            self.done = max(self.done, sum(self.weights[:i]))
+            self.current = (i, now)
+            self.role, self.step = key
+        elif kind == 'done':
+            self.done = max(self.done, sum(self.weights[:i + 1]))
+            self.current = None
+            self.verdicts.append((key[0], key[1], str(data.get('state') or ''),
+                                  bool(data.get('passed'))))
+
+    def fraction(self, now=None):
+        if self.result is not None and self.result.get('ok'):
+            return 1.0
+        done = self.done
+        if self.current is not None:
+            i, started = self.current
+            now = time.monotonic() if now is None else now
+            done = max(done, sum(self.weights[:i])
+                       + min(max(0.0, now - started), 0.95 * self.weights[i]))
+        return min(1.0, done / self.total)
+
+
+def worker_check(checkdir, proto=None):
+    """--worker check: run emu.fwcheck on the request in `checkdir`, JSON
+    lines on `proto`.
+
+    Each fwcheck record goes out as {'kind', 'step', 'text', 'data':
+    {'role', 'state', 'passed'}}. The last line is the result: ok when the
+    check ran to its end, whatever it found; the verdict is data['passed']
+    and data['summary'] its lines. -> 0 when the check ran to its end, else
+    1. What the emulator prints goes to check.log, as in a build."""
+    proto = sys.stdout if proto is None else proto
+    emit = LineEmitter(proto)
+    root = os.path.abspath(checkdir)
+    ok, error, data = False, None, {}
+    try:
+        request = os.path.join(root, CHECK_REQUEST)
+        if not os.path.isfile(request):
+            raise FolderError('No firmware check at %s' % root)
+        with open(request, encoding='utf-8') as fh:
+            req = json.load(fh)
+        os.environ['DIGIEMU_DEVICES'] = devices_dir()
+        os.environ['PYTHONUTF8'] = '1'
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        os.chdir(root)
+        with _session_output(os.path.join(root, CHECK_LOG)) as log:
+            log.write('\n=== %s firmware check  digiemu %s  python %s  %s\n'
+                      % (time.strftime('%Y-%m-%d %H:%M:%S'), APP_VERSION,
+                         sys.version.split()[0],
+                         'frozen' if is_frozen() else 'source'))
+            log.write('build %s\nstock %s\ntiming %s\n'
+                      % (req.get('syx'), req.get('baseline') or '(none)',
+                         bool(req.get('timing'))))
+            log.write('power throttling off: %s\n' % disable_power_throttling())
+
+            def say(text):
+                log.write('%s\n' % text)
+
+            def on_event(role, rec):
+                emit({'kind': str(rec.get('kind') or ''),
+                      'step': str(rec.get('step') or ''),
+                      'text': str(rec.get('text') or ''),
+                      'data': {'role': role, 'state': rec.get('state'),
+                               'passed': rec.get('passed')}})
+
+            try:
+                full = _fwcheck().run_check(
+                    req['syx'], root, baseline=req.get('baseline') or None,
+                    timing=bool(req.get('timing')), keep_work=False, log=say,
+                    on_event=on_event)
+            except BaseException:
+                log.write(traceback.format_exc())
+                raise
+            lines = [str(x) for x in full.get('summary') or ()]
+            log.write('\n'.join(lines) + '\n')
+        with open(os.path.join(root, CHECK_SUMMARY), 'w', encoding='utf-8',
+                  newline='\n') as fh:
+            fh.write('\n'.join(lines) + '\n')
+        ok = True
+        data = {'passed': bool(full.get('passed')), 'summary': lines}
+    except BaseException as exc:                # noqa: BLE001 -- always a result
+        error = describe(exc)
+        try:
+            with open(os.path.join(root, CHECK_LOG), 'a', encoding='utf-8',
+                      errors='replace', newline='\n') as fh:
+                fh.write('the check failed: %s\n%s' % (error,
+                                                       traceback.format_exc()))
+        except OSError:
+            pass
+    finally:
+        # A check stopped half way leaves its work folder behind.
+        shutil.rmtree(os.path.join(root, 'work'), ignore_errors=True)
+    rec = result_record(ok, error, log=CHECK_LOG)
+    rec['data'] = data
+    emit(rec)
+    return EXIT_OK if ok else EXIT_FAILED
+
+
+class CheckConsole:
+    """--check's console view: a line as each stage finishes."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def __call__(self, rec):
+        data = rec.get('data') if isinstance(rec.get('data'), dict) else {}
+        if rec.get('kind') == 'done':
+            self.say('  %-6s %-10s %s' % (CHECK_ROLES.get(data.get('role'), ''),
+                                          rec.get('step') or '',
+                                          data.get('state') or ''))
+
+    def say(self, text):
+        _say(self.stream, text)
+
+
+def check_cli(syx, baseline=None, timing=False, home=None, out=None):
+    """--check: the launcher's Check firmware on the console, through the
+    same worker. Without `baseline`, the stock firmware set up here (the
+    same version first), as the launcher offers. -> 0 when the build
+    passes; 1 when it fails or the check could not finish; 6 for a product
+    this version does not run."""
+    out = sys.stdout if out is None else out
+    try:
+        plan = plan_check(syx, home)
+        if baseline:
+            baseline = os.path.abspath(baseline)
+            stock = identify_supported(baseline)
+            if getattr(stock.device, 'short', None) != \
+                    getattr(plan.release.device, 'short', None):
+                raise Refused('%s is %s firmware and %s is %s firmware.'
+                              % (os.path.basename(baseline), stock.product,
+                                 os.path.basename(plan.source),
+                                 plan.release.product), EXIT_USAGE)
+    except Refused as exc:
+        _say(out, str(exc))
+        return exc.code
+    if plan.errors:
+        for e in plan.errors:
+            _say(out, e)
+        return EXIT_FAILED
+    if not baseline and plan.baselines:
+        baseline = plan.baselines[0]['syx']
+        _say(out, 'Comparing with %s, set up here (--baseline FILE to choose).'
+             % plan.baselines[0]['label'])
+    elif not baseline:
+        _say(out, 'No stock firmware to compare with: the stock firmware\'s '
+             'own quirks count against this build (--baseline FILE).')
+    device = getattr(plan.release.device, 'short', None)
+    checkdir = new_check_dir(plan.source, home)
+    write_check_request(checkdir, plan.source, baseline, timing, device)
+    _say(out, 'Checking %s: about %d minutes. The report goes to %s.'
+         % (os.path.basename(plan.source),
+            check_minutes(device, bool(baseline), timing), checkdir))
+    console = CheckConsole(out)
+    try:
+        # kill_on_close: closing this console must not leave an invisible
+        # check running the emulator for minutes.
+        proc = spawn_worker('check', checkdir, piped=True, kill_on_close=True)
+    except OSError as exc:
+        _say(out, 'error: cannot start the check (%s)' % describe(exc))
+        return EXIT_FAILED
+    try:
+        result, rc = _relay_worker(proc, console)
+    finally:
+        job = getattr(proc, 'digiemu_job', None)
+        if job is not None:
+            job.close()
+        shutil.rmtree(os.path.join(checkdir, 'work'), ignore_errors=True)
+    if rc is None:
+        _say(out, 'Stopped.')
+        return EXIT_FAILED
+    if result is None or not result.get('ok'):
+        _say(out, 'The check could not finish: %s' % (
+            (result or {}).get('error') or 'the check process %s'
+            % describe_exit(rc)))
+        _say(out, 'Log: %s' % os.path.join(checkdir, CHECK_LOG))
+        return EXIT_FAILED
+    data = result.get('data') if isinstance(result.get('data'), dict) else {}
+    _say(out, '')
+    for line in data.get('summary') or ():
+        _say(out, str(line))
+    _say(out, 'Report: %s' % os.path.join(checkdir, 'report.json'))
+    return EXIT_OK if data.get('passed') else EXIT_FAILED
+
+
 # --- the launcher ----------------------------------------------------------------
 
 def _launcher_log(home):
@@ -2386,6 +2777,282 @@ class BuildDialog:
             self.cancel()
 
 
+CHECK_INTRO = (
+    'The check runs this build the way the device would: it reads the .syx '
+    'as the device receives it, runs the build\'s own bootloader, cold-boots '
+    'it with the processor\'s rules enforced (memory map, instruction set, '
+    'watchdog), then presses keys through a short session. With the stock '
+    'firmware it does the same to that and compares the screens and sound. '
+    'Nothing is written to your devices or your firmware here.')
+CHECK_PASSED = (
+    'Nothing the check can see stands in the way. It cannot see everything '
+    '(the analog audio path, timing to the cycle, keys the session does not '
+    'press), so still flash with care.')
+CHECK_FAILED = ('The check found problems, listed below. The report folder '
+                'has every detail (report.json) and any screens that differ.')
+
+
+class CheckSetupDialog:
+    """What to compare a build with, and whether to time it."""
+
+    NONE = 'none'
+    OTHER = 'other'
+
+    def __init__(self, app, plan):
+        tk, ttk = app.tk, app.ttk
+        self.app, self.plan = app, plan
+        self.other = None               # a stock .syx chosen by hand
+        rel = plan.release
+        self.device = getattr(getattr(rel, 'device', None), 'short', None)
+        w = self.win = tk.Toplevel(app.root)
+        w.title('Check firmware')
+        w.transient(app.root)
+        body = ttk.Frame(w, padding=12)
+        body.pack(fill='both', expand=True)
+        ttk.Label(body, text=os.path.basename(plan.source),
+                  font=('Segoe UI', 11, 'bold')).pack(anchor='w')
+        ttk.Label(body, text='%s %s, %s' % (
+            rel.product, rel.version,
+            'a release digiemu knows' if rel.status != 'untested'
+            else 'not a release digiemu knows (custom or modified)')
+                  ).pack(anchor='w')
+        ttk.Label(body, wraplength=520, justify='left',
+                  text=CHECK_INTRO).pack(anchor='w', pady=(6, 10))
+        ttk.Label(body, text='Compare with the stock firmware',
+                  font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        self.base_var = tk.StringVar(value='0' if plan.baselines else self.NONE)
+        self.last_choice = self.base_var.get()
+        for i, c in enumerate(plan.baselines):
+            ttk.Radiobutton(body, text=c['label'], value=str(i),
+                            variable=self.base_var,
+                            command=self._changed).pack(anchor='w')
+        self.other_btn = ttk.Radiobutton(
+            body, text='Another .syx file...', value=self.OTHER,
+            variable=self.base_var, command=self._choose_other)
+        self.other_btn.pack(anchor='w')
+        ttk.Radiobutton(body, text='Nothing: the stock firmware\'s own quirks '
+                        'then count against this build', value=self.NONE,
+                        variable=self.base_var,
+                        command=self._changed).pack(anchor='w')
+        self.timing_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text='Also measure the audio render\'s timing '
+                        '(several times slower)', variable=self.timing_var,
+                        command=self._changed).pack(anchor='w', pady=(10, 0))
+        self.estimate_var = tk.StringVar()
+        ttk.Label(body, textvariable=self.estimate_var, foreground='#666',
+                  wraplength=520, justify='left').pack(anchor='w', pady=(6, 10))
+        btns = ttk.Frame(body)
+        btns.pack(fill='x')
+        ttk.Button(btns, text='Cancel', command=self.close).pack(side='right')
+        ttk.Button(btns, text='Start check',
+                   command=self.start).pack(side='right', padx=6)
+        self._changed()
+
+    def baseline(self):
+        """-> the stock .syx chosen, or None."""
+        choice = self.base_var.get()
+        if choice == self.OTHER:
+            return self.other
+        if choice == self.NONE:
+            return None
+        return self.plan.baselines[int(choice)]['syx']
+
+    def _changed(self):
+        choice = self.base_var.get()
+        if choice != self.OTHER:
+            self.last_choice = choice
+        stock = self.baseline()
+        text = 'About %d minutes. You can keep using digiemu meanwhile.' % (
+            check_minutes(self.device, stock is not None,
+                          bool(self.timing_var.get())))
+        if choice == self.OTHER and stock:
+            text = 'Stock: %s. %s' % (os.path.basename(stock), text)
+        self.estimate_var.set(text)
+
+    def _choose_other(self):
+        path = self.app.fd.askopenfilename(
+            parent=self.win, title='Choose the stock firmware',
+            filetypes=[('Elektron OS (.syx)', '*.syx'), ('All files', '*.*')])
+        if path:
+            try:
+                rel = identify_supported(os.path.abspath(path))
+            except Refused as exc:
+                self.app.mb.showerror('Cannot compare with this file', str(exc),
+                                      parent=self.win)
+                path = None
+            else:
+                short = getattr(rel.device, 'short', None)
+                if short != self.device:
+                    self.app.mb.showerror(
+                        'Cannot compare with this file',
+                        '%s is %s firmware; the build is %s firmware.'
+                        % (os.path.basename(path), rel.product,
+                           self.plan.release.product), parent=self.win)
+                    path = None
+        if path:
+            self.other = os.path.abspath(path)
+        elif not self.other:
+            self.base_var.set(self.last_choice)
+        self._changed()
+
+    def start(self):
+        stock = self.baseline()
+        if self.base_var.get() == self.OTHER and not stock:
+            return self._choose_other()
+        timing = bool(self.timing_var.get())
+        self.close()
+        self.app.start_check(self.plan, stock, timing)
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+
+
+class CheckDialog:
+    """The progress and the verdict of one firmware check."""
+
+    def __init__(self, app, checkdir, label, proc, progress):
+        tk, ttk = app.tk, app.ttk
+        self.app, self.checkdir, self.proc = app, checkdir, proc
+        self.progress = progress
+        self.started = time.monotonic()
+        self.cancelled = self.done = False
+        self.passed = None
+        w = self.win = tk.Toplevel(app.root)
+        w.title('Checking %s' % label)
+        w.transient(app.root)
+        w.protocol('WM_DELETE_WINDOW', self.close_or_cancel)
+        body = ttk.Frame(w, padding=12)
+        body.pack(fill='both', expand=True)
+        self.step_var = tk.StringVar(value='Starting...')
+        self.step_label = ttk.Label(body, textvariable=self.step_var,
+                                    font=('Segoe UI', 11, 'bold'))
+        self.step_label.pack(anchor='w')
+        self.about_var = tk.StringVar(value=(
+            'Checking %s. This runs the firmware for several minutes; the '
+            'report is kept in %s.' % (label, checkdir)))
+        ttk.Label(body, textvariable=self.about_var, wraplength=520,
+                  justify='left').pack(anchor='w', pady=(2, 8))
+        self.bar = ttk.Progressbar(body, maximum=1000, length=520,
+                                   mode='determinate')
+        self.bar.pack(fill='x')
+        self.pct_var = tk.StringVar(value='')
+        ttk.Label(body, textvariable=self.pct_var).pack(anchor='w', pady=(2, 6))
+        self.text = tk.Text(body, height=12, width=80, wrap='none',
+                            font=('Consolas', 9), state='disabled')
+        self.text.pack(fill='both', expand=True)
+        btns = ttk.Frame(body)
+        btns.pack(fill='x', pady=(8, 0))
+        self.cancel_btn = ttk.Button(btns, text='Stop', command=self.cancel)
+        self.cancel_btn.pack(side='right')
+        ttk.Button(btns, text='Open report folder',
+                   command=self.open_report).pack(side='right', padx=6)
+        self._clock()
+
+    def _clock(self):
+        try:
+            if not self.win.winfo_exists():
+                return
+        except Exception:
+            return
+        if not self.done:
+            secs = int(time.monotonic() - self.started)
+            frac = self.progress.fraction()
+            self.bar['value'] = int(frac * 1000)
+            self.pct_var.set('%d%%   %d:%02d elapsed'
+                             % (int(frac * 100), secs // 60, secs % 60))
+            self.win.after(1000, self._clock)
+
+    def _append(self, line):
+        t = self.text
+        t.configure(state='normal')
+        t.insert('end', line + '\n')
+        t.see('end')
+        t.configure(state='disabled')
+
+    def feed_line(self, line):
+        rec = decode_line(line)
+        if rec is None:
+            if line.strip():
+                self._append(line.rstrip())
+            return
+        self.progress.feed(rec)
+        kind = rec.get('kind')
+        if kind == 'result':
+            return
+        data = rec.get('data') if isinstance(rec.get('data'), dict) else {}
+        role, step = data.get('role'), rec.get('step')
+        who = CHECK_ROLES.get(role, role or '')
+        title = CHECK_TITLES.get(step, step or '')
+        if kind == 'start':
+            self.step_var.set('%s: %s' % (who, title) if who else title)
+        elif kind == 'done':
+            self._append('%-6s %-10s %s' % (who, step, data.get('state') or ''))
+        elif kind == 'note' and rec.get('text'):
+            self._append('         %s' % rec['text'])
+
+    def finished(self, rc):
+        self.done = True
+        res = self.progress.result or {}
+        data = res.get('data') if isinstance(res.get('data'), dict) else {}
+        self.cancel_btn.configure(text='Close', command=self.close)
+        if self.cancelled:
+            self.step_var.set('Stopped')
+            self.pct_var.set('The check was stopped before it could judge '
+                             'anything.')
+        elif res.get('ok'):
+            self.passed = bool(data.get('passed'))
+            self.bar['value'] = 1000
+            self.step_var.set('PASS' if self.passed else 'FAIL')
+            self.step_label.configure(
+                foreground='#1b7a1b' if self.passed else '#b00020')
+            self.about_var.set(CHECK_PASSED if self.passed else CHECK_FAILED)
+            self.pct_var.set('Done in %d:%02d.' % divmod(
+                int(time.monotonic() - self.started), 60))
+            self._append('')
+            for line in data.get('summary') or ():
+                self._append(str(line))
+        else:
+            err = res.get('error') or ('the check process %s'
+                                       % describe_exit(rc))
+            self.step_var.set('The check could not finish')
+            self.pct_var.set('')
+            self._append('ERROR: %s' % err)
+            self._append('Log: %s' % os.path.join(self.checkdir, CHECK_LOG))
+
+    def open_report(self):
+        if os.path.isdir(self.checkdir):
+            open_in_explorer(self.checkdir)
+
+    def cancel(self):
+        if self.done:
+            return self.close()
+        if not self.app.mb.askyesno(
+                'Stop the check', 'Stop checking? Nothing will have been '
+                'judged; a new check starts from the beginning.',
+                parent=self.win):
+            return
+        self.cancelled = True
+        try:
+            stop_worker(self.proc)
+        except OSError:
+            pass
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+
+    def close_or_cancel(self):
+        if self.done:
+            self.close()
+        else:
+            self.cancel()
+
+
 class Launcher:
     """The window: firmware folders, their state, and what to do with them.
 
@@ -2404,6 +3071,7 @@ class Launcher:
         self.infos = {}
         self.events = queue.Queue()
         self.selftest = None            # run_selftest's result, once it is in
+        self.check_setup = None         # the last Check firmware dialog
         root.title('digiemu %s' % APP_VERSION)
         root.minsize(640, 320)
         root.report_callback_exception = self._callback_error
@@ -2441,6 +3109,7 @@ class Launcher:
         bar.pack(fill='x')
         self.buttons = {}
         for key, text, cmd in (('add', 'Add firmware...', self.add),
+                               ('check', 'Check firmware...', self.check),
                                ('play', 'Play', self.play),
                                ('rebuild', 'Rebuild', self.rebuild),
                                ('reset', 'Reset to factory', self.reset),
@@ -2662,6 +3331,8 @@ class Launcher:
                     del self.jobs[fwdir]
                     if job.kind == 'first-run':
                         self._build_exited(fwdir, job, arg)
+                    elif job.kind == 'check':
+                        self._check_exited(fwdir, job, arg)
                     else:
                         self._panel_exited(fwdir, arg)
         finally:
@@ -2682,6 +3353,13 @@ class Launcher:
             if job.open_after or self.mb.askyesno(
                     'Ready', '%s is ready. Open it now?' % info['label']):
                 self.start_panel(info)
+
+    def _check_exited(self, checkdir, job, rc):
+        self.log.info('check worker for %s exited %s', checkdir, rc)
+        # A stopped or crashed worker never reached its own clean-up, and
+        # its work folder holds a card image and snapshots.
+        shutil.rmtree(os.path.join(checkdir, 'work'), ignore_errors=True)
+        job.dialog.finished(rc)
 
     def _panel_exited(self, fwdir, rc):
         self.log.info('panel worker for %s exited %s', fwdir, rc)
@@ -2818,6 +3496,43 @@ class Launcher:
         self.refresh()
         self.start_build(info['fwdir'], info['label'])
 
+    def check(self):
+        """Check firmware: a build (usually a custom one) against the stock
+        firmware set up here, before it goes on a device."""
+        path = self.fd.askopenfilename(
+            parent=self.root, title='Choose the firmware build to check',
+            filetypes=[('Elektron OS (.syx)', '*.syx'), ('All files', '*.*')])
+        if not path:
+            return
+        try:
+            plan = plan_check(path, self.home)
+        except Refused as exc:
+            self.mb.showerror('Cannot check this firmware', str(exc))
+            return
+        if plan.errors:
+            self.mb.showerror('Cannot check this firmware',
+                              '\n\n'.join(plan.errors))
+            return
+        self.check_setup = CheckSetupDialog(self, plan)
+
+    def start_check(self, plan, baseline, timing):
+        device = getattr(getattr(plan.release, 'device', None), 'short', None)
+        try:
+            checkdir = new_check_dir(plan.source, self.home)
+            write_check_request(checkdir, plan.source, baseline, timing, device)
+            proc = spawn_worker('check', checkdir, piped=True)
+        except OSError as exc:
+            self.log.exception('starting a firmware check')
+            self.mb.showerror('Cannot start the check', describe(exc))
+            return
+        self.log.info('check worker pid %s for %s (stock %s, timing %s) in %s',
+                      proc.pid, plan.source, baseline, timing, checkdir)
+        dialog = CheckDialog(self, checkdir, os.path.basename(plan.source), proc,
+                             CheckProgress(device, baseline is not None, timing))
+        self.jobs[checkdir] = Job('check', proc, dialog)
+        threading.Thread(target=self._read_worker, args=(checkdir, proc),
+                         daemon=True).start()
+
     def open_folder(self):
         info = self.selected()
         if info:
@@ -2847,6 +3562,7 @@ class Launcher:
 
     def quit(self):
         builds = [j for j in self.jobs.values() if j.kind == 'first-run']
+        checks = [j for j in self.jobs.values() if j.kind == 'check']
         if builds:
             answer = self.mb.askyesnocancel(
                 'Setup still running',
@@ -2856,6 +3572,20 @@ class Launcher:
                 return
             if answer:
                 for job in builds:
+                    try:
+                        stop_worker(job.proc)
+                    except OSError:
+                        pass
+        if checks:
+            answer = self.mb.askyesnocancel(
+                'Check still running',
+                'A firmware check is still running.\n\nYes: stop it.\nNo: let '
+                'it finish in the background; its report lands in %s.'
+                % checks_root(self.home))
+            if answer is None:
+                return
+            if answer:
+                for job in checks:
                     try:
                         stop_worker(job.proc)
                     except OSError:
@@ -2903,6 +3633,15 @@ def _parser():
     mode.add_argument('--reset', metavar='NAME',
                       help='reset a firmware to factory: delete its +Drive '
                            'image and saved sessions (needs --yes)')
+    mode.add_argument('--check', metavar='SYX',
+                      help='check a firmware build before it goes on a '
+                           'device; exit 0 when it passes')
+    ap.add_argument('--baseline', metavar='STOCK',
+                    help='with --check: the stock .syx to compare with '
+                         '(default: the stock firmware set up here)')
+    ap.add_argument('--timing', action='store_true',
+                    help='with --check: also measure the audio render\'s '
+                         'timing (several times slower)')
     # Bare, after --worker first-run FWDIR: the launcher's Rebuild (snapshots
     # cleared, card kept). With a NAME, the CLI mode.
     ap.add_argument('--rebuild', nargs='?', const=True, default=None,
@@ -2929,13 +3668,18 @@ def main(argv=None):
             return worker_first_run(fwdir, rebuild=bool(args.rebuild))
         if mode == 'panel':
             return worker_panel(fwdir)
+        if mode == 'check':
+            return worker_check(fwdir)
         _say(sys.stderr, 'unknown worker mode %r' % mode)
         return EXIT_USAGE
-    other = args.add or args.list or args.reset
+    other = args.add or args.list or args.reset or args.check
+    if (args.baseline or args.timing) and not args.check:
+        _say(sys.stderr, '--baseline and --timing go with --check')
+        return EXIT_USAGE
     if isinstance(args.rebuild, str):
         if other:
             _say(sys.stderr, '--rebuild NAME cannot be combined with --add, '
-                 '--list or --reset')
+                 '--list, --reset or --check')
             return EXIT_USAGE
         return rebuild_firmware(args.rebuild, home=args.home)
     if args.rebuild is True and not other:
@@ -2948,6 +3692,9 @@ def main(argv=None):
         return list_firmware(home=args.home)
     if args.reset:
         return reset_cli(args.reset, yes=args.yes, home=args.home)
+    if args.check:
+        return check_cli(args.check, baseline=args.baseline,
+                         timing=args.timing, home=args.home)
     return launcher(home=args.home)
 
 

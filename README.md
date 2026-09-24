@@ -89,11 +89,41 @@ digiemu-console.exe --add FILE.syx [--yes]   set up a firmware (--yes: accept an
 digiemu-console.exe --list                   list what is set up here
 digiemu-console.exe --rebuild NAME           start one again from its +Drive
 digiemu-console.exe --reset NAME --yes       reset one to factory
+digiemu-console.exe --check FILE.syx         check a build before you flash it (exit 0: it passed)
+    [--baseline STOCK.syx] [--timing]        compare with this stock build; also time the audio
 ```
 
 `--home DIR` uses another data folder. Setting up takes about 23 seconds on
 the reference desktop, or about 13 seconds on a +Drive that already holds
 the factory content.
+
+### Checking a custom build before you flash it
+
+In the app, **Check firmware...** takes the build's .syx and compares it
+with the stock firmware you have set up here (or another stock .syx you
+pick). A check takes a few minutes, runs in the background, and ends with
+PASS or FAIL and the reasons. Its report stays in `checks/` next to
+`digiemu.exe`.
+
+From source, `emu.fwcheck` does the same from the command line:
+
+```text
+python -m emu.fwcheck CUSTOM.syx --baseline STOCK.syx --out check
+```
+
+It checks the file as the device receives it (every checksum, the section
+table, and a bootstrap version that would make the device rewrite its
+bootstrap). It runs the build's own bootstrap from the flash, then boots
+the OS from where that leaves it. Then it drives the build with a key
+script under a stricter emulator:
+- it holds the firmware to the MCF5441x's memory map, instruction set and
+  exceptions;
+- it times the firmware in core cycles, so the audio render is checked
+  against its deadline;
+- it compares every screen and sample with the stock build's.
+
+[docs/FIRMWARE-CHECK.md](docs/FIRMWARE-CHECK.md) says what a pass means and
+what no emulator run can tell you.
 
 ## Status
 
@@ -191,6 +221,7 @@ snapshots, card images and any file over 1 MB, on every pull request.
 | | |
 |---|---|
 | [docs/STATUS.md](docs/STATUS.md) | What works, what does not, and the open work |
+| [docs/FIRMWARE-CHECK.md](docs/FIRMWARE-CHECK.md) | Checking a custom build before it goes on a device: what `emu.fwcheck` checks and what it cannot |
 | [DIGITAKT-MK1.md](DIGITAKT-MK1.md) | How the mk1 emulation works: boot, panel, audio, sequencer, and the tools |
 | [DIGITONE-MK1.md](DIGITONE-MK1.md) | The Digitone: its second CPU, card, panel and measurements |
 | [docs/mk1/](docs/mk1/00-INDEX.md) | The firmware reference: 01–09 are generated, 10 onwards written by hand |

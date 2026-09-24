@@ -147,7 +147,8 @@ def build_flash(syx_path, size=0x1000000):
 def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         patch_sem=True, patch_depack=True, verbose=False, stall_window=3_000_000,
         extra_hook=None, fast=True, resume_from=None, machine_out=None,
-        pre_start=None, sdgate=True, esdhc=True, coverage=True):
+        pre_start=None, sdgate=True, esdhc=True, coverage=True, ddr=None,
+        handoff=None):
     """resume_from: path to a snapshot (see emu/snapshot.py). Loads registers
     and memory instead of starting at ENTRY, but installs the *same* hooks, so
     a resumed run behaves identically to the equivalent straight run. Without
@@ -195,7 +196,8 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     profile = symbols.resolve(main_img, load_addr=MAIN_LOAD)
 
     flash = build_flash(syx_path)
-    m = Machine()
+    # ddr: decode the SDRAM space as the device does (Machine.set_ddr).
+    m = Machine(ddr=ddr)
     st = {
         'n': 0, 'seen': set(), 'reads': [], 'spin': 0, 'curve': [],
         'transport_calls': [], 'sem_kicks': 0, 'depack_clamps': 0,
@@ -393,6 +395,12 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         m.uc.reg_write(UC_M68K_REG_SR, 0x2700)
         m.uc.reg_write(UC_M68K_REG_A7, 0x40800000)
         start_pc = profile.entry
+        if handoff is not None:
+            # Start where the real bootstrap left the device instead
+            # (emu/bootrom.py): its stack and boot flags, SRAM, controller
+            # setup. MAIN OS in DDR is the same bytes either way.
+            from emu import bootrom
+            start_pc = bootrom.apply_handoff(m, bootrom.load_handoff(handoff))
     if machine_out is not None:
         machine_out['m'] = m
         # st['n'] is the live instruction counter -- exposing it here lets a

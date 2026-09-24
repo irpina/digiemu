@@ -92,7 +92,10 @@ APP_MODULES = (
     'emu.device', 'emu.longrun', 'emu.panel', 'emu.screen', 'emu.symbols', 'emu.dtim',
     'emu.pit', 'emu.harness', 'emu.native', 'emu.fastuc', 'emu.unicorn_compat',
     'emu.dspboot', 'emu.dsp', 'emu.edma', 'emu.gpio', 'emu.hle',
-    'emu.softfloat', 'emu.ssi', 'emu.trace', 'dt2.coldfire',
+    'emu.softfloat', 'emu.ssi', 'emu.trace', 'emu.bootrom', 'dt2.container',
+    'emu.fwcheck', 'emu.fwcompare', 'emu.session', 'emu.strict', 'emu.cftiming',
+    'dt2.elz',
+    'dt2.coldfire',
 )
 # The standard library and bindings that emu/portable.py, bootstrap.py,
 # dtpanel.py and gui.py import inside functions.

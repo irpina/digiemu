@@ -930,6 +930,67 @@ class AddTest(Base):
         self.assertEqual(rc, portable.EXIT_BUSY, text)
         self.assertEqual(self.spawned, [])
 
+    # --check SYX
+
+    def check_proc(self, passed=True, ok=True):
+        done = {'kind': 'done', 'step': 'boot', 'text': '',
+                'data': {'role': 'build', 'state': 'passed', 'passed': True}}
+        result = portable.result_record(ok, None if ok else 'boom',
+                                        log=portable.CHECK_LOG)
+        result['data'] = {'passed': passed, 'summary': [
+            'build: %s' % ('PASS' if passed else 'FAIL')]} if ok else {}
+        return FakeProc([portable.encode_line(done),
+                         portable.encode_line(result)], 0 if ok else 1)
+
+    def request_of(self, checkdir):
+        with open(os.path.join(checkdir, portable.CHECK_REQUEST),
+                  encoding='utf-8') as fh:
+            return json.load(fh)
+
+    def test_check_cli_compares_with_the_stock_set_up_here(self):
+        stock = self.make_folder()
+        self.fake_proc = self.check_proc(passed=True)
+        rc, text, _ = self.run_main(['--check', self.src],
+                                    rel=release('untested'))
+        self.assertEqual(rc, portable.EXIT_OK, text)
+        [(mode, checkdir, extra, piped)] = self.spawned
+        self.assertEqual((mode, extra, piped), ('check', (), True))
+        req = self.request_of(checkdir)
+        self.assertEqual((req['syx'], req['baseline'], req['timing']),
+                         (self.src, stock.syx, False))
+        self.assertIn('Comparing with Digitakt 9.99', text)
+        self.assertIn('Build  boot       passed', text)
+        self.assertIn('build: PASS', text)
+        self.assertIn(os.path.join(checkdir, 'report.json'), text)
+
+    def test_check_cli_a_failing_build_is_exit_1(self):
+        self.fake_proc = self.check_proc(passed=False)
+        rc, text, _ = self.run_main(['--check', self.src, '--timing'],
+                                    rel=release('untested'))
+        self.assertEqual(rc, portable.EXIT_FAILED, text)
+        self.assertIn('No stock firmware to compare with', text)
+        self.assertIn('build: FAIL', text)
+        req = self.request_of(self.spawned[0][1])
+        self.assertEqual((req['baseline'], req['timing']), (None, True))
+
+    def test_check_cli_when_the_check_cannot_finish(self):
+        self.fake_proc = self.check_proc(ok=False)
+        rc, text, _ = self.run_main(['--check', self.src],
+                                    rel=release('untested'))
+        self.assertEqual(rc, portable.EXIT_FAILED)
+        self.assertIn('The check could not finish: boom', text)
+        self.assertIn(portable.CHECK_LOG, text)
+
+    def test_check_cli_usage(self):
+        rc, text, _ = self.run_main(['--timing'])
+        self.assertEqual(rc, portable.EXIT_USAGE)
+        self.assertIn('--check', text)
+        rc, text, _ = self.run_main(
+            ['--check', self.src],
+            rel=release('unsupported', short=None, product='Syntakt'))
+        self.assertEqual(rc, portable.EXIT_UNSUPPORTED, text)
+        self.assertEqual(self.spawned, [])
+
     # --reset NAME
 
     def test_reset_cli_needs_yes_then_resets(self):
@@ -1648,6 +1709,148 @@ class SelftestTest(Base):
 
 # --- the launcher, driven through a fake tkinter (no window) ---------------------------------
 
+def fake_fwcheck(run_check):
+    m = types.ModuleType('emu.fwcheck')
+    m.run_check = run_check
+    return m
+
+
+class CheckTest(Base):
+    """The firmware check's launcher half: what it offers as the stock
+    build, where it writes, how far along it is, and the worker."""
+
+    def test_the_stock_candidates_are_known_releases_of_the_same_product(self):
+        paths = self.make_folder()
+        with stub_modules(bootstrap=make_bootstrap()):
+            dt = portable.baseline_candidates(release('untested'), self.home)
+            dn = portable.baseline_candidates(
+                release('untested', short='dn1', product='Digitone'),
+                self.home)
+            self.assertEqual([(c['syx'], c['same_version']) for c in dt],
+                             [(paths.syx, True)])
+            self.assertEqual(dn, [])
+            state = _read_state(paths)
+            state['release']['status'] = 'untested'   # may itself be custom
+            _write_state(paths, state)
+            self.assertEqual(
+                portable.baseline_candidates(release('untested'), self.home), [])
+
+    def test_plan_check_refuses_what_this_version_cannot_boot(self):
+        with stub_modules(bootstrap=make_bootstrap(), release=make_release(
+                release('unsupported', short=None, product='Syntakt'))):
+            with self.assertRaises(portable.Refused):
+                portable.plan_check(self.src, self.home)
+        with stub_modules(bootstrap=make_bootstrap(),
+                          release=make_release(release('untested'))):
+            plan = portable.plan_check(self.src, self.home)
+        self.assertEqual((plan.source, plan.errors), (self.src, []))
+
+    def test_each_check_gets_a_new_folder(self):
+        a = portable.new_check_dir(self.src, self.home, stamp='20260924-1200')
+        b = portable.new_check_dir(self.src, self.home, stamp='20260924-1200')
+        self.assertNotEqual(a, b)
+        self.assertEqual(os.path.dirname(a), portable.checks_root(self.home))
+        self.assertEqual(os.path.basename(a), '20260924-1200-my-firmware')
+
+    def test_progress_goes_by_expected_seconds(self):
+        # dt1 without timing: 1+1+9+75+50 a build, twice, and 2 to compare.
+        p = portable.CheckProgress('dt1', True, False)
+        self.assertEqual(p.total, 274)
+        self.assertEqual(portable.check_minutes('dt1', True, False), 5)
+        self.assertEqual(portable.check_minutes('dt1', False, True), 7)
+        boot = {'kind': 'start', 'step': 'boot', 'data': {'role': 'baseline'}}
+        p.feed(boot, now=100.0)
+        self.assertEqual((p.role, p.step), ('baseline', 'boot'))
+        self.assertAlmostEqual(p.fraction(now=100.0), 11 / 274)
+        # the clock moves it on inside the stage, never past 95% of it
+        self.assertAlmostEqual(p.fraction(now=10_000.0), (11 + 0.95 * 75) / 274)
+        p.feed({'kind': 'done', 'step': 'boot',
+                'data': {'role': 'baseline', 'state': 'passed',
+                         'passed': True}}, now=150.0)
+        self.assertAlmostEqual(p.fraction(now=150.0), 86 / 274)
+        self.assertEqual(p.verdicts, [('baseline', 'boot', 'passed', True)])
+        p.feed({'kind': 'start', 'step': 'boot', 'data': {'role': 'nobody'}})
+        self.assertAlmostEqual(p.fraction(now=150.0), 86 / 274)
+        p.feed({'kind': 'result', 'ok': True})
+        self.assertEqual(p.fraction(), 1.0)
+
+    def request(self, baseline=None, timing=False):
+        checkdir = portable.new_check_dir(self.src, self.home)
+        portable.write_check_request(checkdir, self.src, baseline, timing, 'dt1')
+        return checkdir
+
+    def test_worker_check_streams_records_and_the_verdict(self):
+        stock = os.path.join(self.tmp, 'stock.syx')
+        with open(stock, 'wb') as fh:
+            fh.write(SYX_BYTES)
+        checkdir = self.request(stock, timing=True)
+        calls = []
+
+        def run_check(syx, out, baseline=None, timing=True, keep_work=True,
+                      log=print, on_event=None, **kw):
+            calls.append((syx, out, baseline, timing, keep_work))
+            print('emulator chatter ✓')                  # must reach the log
+            log('== container')
+            on_event('build', {'kind': 'start', 'step': 'container'})
+            on_event('build', {'kind': 'done', 'step': 'container',
+                               'state': 'passed', 'passed': True})
+            os.makedirs(os.path.join(out, 'work', 'build'))
+            return {'passed': False, 'summary': ['build: FAIL', '  run  FAIL']}
+
+        out = io.StringIO()
+        with stub_modules(fwcheck=fake_fwcheck(run_check)):
+            rc = portable.worker_check(checkdir, proto=out)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [(self.src, checkdir, stock, True, False)])
+        recs = [portable.decode_line(line) for line in out.getvalue().splitlines()]
+        self.assertNotIn(None, recs)
+        self.assertEqual([(r['kind'], r['step'], r['data'].get('role'))
+                          for r in recs[:-1]],
+                         [('start', 'container', 'build'),
+                          ('done', 'container', 'build')])
+        self.assertEqual(recs[-1]['kind'], 'result')
+        self.assertIs(recs[-1]['ok'], True)
+        self.assertEqual(recs[-1]['data'], {'passed': False, 'summary': [
+            'build: FAIL', '  run  FAIL']})
+        with open(os.path.join(checkdir, portable.CHECK_LOG),
+                  encoding='utf-8') as fh:
+            log = fh.read()
+        self.assertIn('emulator chatter ✓', log)
+        self.assertIn('== container', log)
+        with open(os.path.join(checkdir, portable.CHECK_SUMMARY),
+                  encoding='utf-8') as fh:
+            self.assertEqual(fh.read(), 'build: FAIL\n  run  FAIL\n')
+        self.assertFalse(os.path.exists(os.path.join(checkdir, 'work')))
+        self.assertEqual(os.environ['DIGIEMU_DEVICES'], portable.devices_dir())
+
+    def test_worker_check_failure_is_a_result_not_a_crash(self):
+        checkdir = self.request()
+
+        def run_check(*args, **kw):
+            raise RuntimeError('boom')
+
+        out = io.StringIO()
+        with stub_modules(fwcheck=fake_fwcheck(run_check)):
+            rc = portable.worker_check(checkdir, proto=out)
+        self.assertEqual(rc, portable.EXIT_FAILED)
+        last = portable.decode_line(out.getvalue().splitlines()[-1])
+        self.assertEqual((last['ok'], last['error']), (False, 'RuntimeError: boom'))
+        with open(os.path.join(checkdir, portable.CHECK_LOG),
+                  encoding='utf-8') as fh:
+            self.assertIn('RuntimeError: boom', fh.read())
+
+    def test_worker_check_without_a_request(self):
+        out = io.StringIO()
+        rc = portable.worker_check(os.path.join(self.tmp, 'nowhere'), proto=out)
+        self.assertEqual(rc, portable.EXIT_FAILED)
+        last = portable.decode_line(out.getvalue().splitlines()[-1])
+        self.assertIn('No firmware check', last['error'])
+
+    def test_the_check_worker_command(self):
+        self.assertEqual(portable.worker_command('check', self.tmp)[-3:],
+                         ['--worker', 'check', os.path.abspath(self.tmp)])
+
+
 class FakeVar:
     def __init__(self, value=''):
         self.value = value
@@ -1871,10 +2074,11 @@ class LauncherTest(Base):
         self.dialogs = FakeDialogs()
         tk = types.ModuleType('tkinter')
         tk.Tk = tk.Toplevel = FakeWidget
-        tk.StringVar = FakeVar
+        tk.StringVar = tk.BooleanVar = FakeVar
         tk.Text = FakeText
         ttk = types.ModuleType('tkinter.ttk')
         ttk.Frame = ttk.Label = ttk.Button = ttk.Progressbar = FakeWidget
+        ttk.Radiobutton = ttk.Checkbutton = FakeWidget
         ttk.Treeview = FakeTree
         tk.ttk, tk.messagebox, tk.filedialog = ttk, self.dialogs, self.dialogs
         self.tk_modules = {'tkinter': tk, 'tkinter.ttk': ttk,
@@ -2169,6 +2373,140 @@ class LauncherTest(Base):
         app.quit()
         self.assertFalse(root.destroyed)
         self.dialogs.answers['Setup still running'] = True
+        app.quit()
+        self.assertTrue(root.destroyed and self.next_proc.terminated)
+
+    # the firmware check
+
+    def check_lines(self, passed):
+        recs = [{'kind': 'start', 'step': 'boot', 'text': '',
+                 'data': {'role': 'build'}},
+                {'kind': 'note', 'step': 'boot', 'text': 'intro done',
+                 'data': {'role': 'build'}},
+                {'kind': 'done', 'step': 'boot', 'text': '',
+                 'data': {'role': 'build', 'state': 'passed', 'passed': True}}]
+        result = portable.result_record(True, log=portable.CHECK_LOG)
+        result['data'] = {'passed': passed,
+                          'summary': ['build: %s' % ('PASS' if passed else 'FAIL')]}
+        return [portable.encode_line(r) for r in recs + [result]]
+
+    def test_check_offers_the_stock_build_and_runs_the_worker(self):
+        stock = self.make_folder()
+        self.dialogs.path = self.src
+        app, _ = self.launch(release('untested'))
+        self.next_proc = FakeProc(self.check_lines(True), rc=0)
+        app.check()
+        setup = app.check_setup
+        self.assertEqual(setup.base_var.get(), '0')        # the stock one
+        self.assertEqual(setup.baseline(), stock.syx)
+        self.assertIn('About 5 minutes', setup.estimate_var.get())
+        setup.timing_var.set(True)
+        setup._changed()
+        self.assertIn('About 14 minutes', setup.estimate_var.get())
+        setup.start()
+        self.assertTrue(setup.win.destroyed)
+        [(mode, checkdir, extra, piped)] = self.spawned
+        self.assertEqual((mode, extra, piped), ('check', (), True))
+        self.assertEqual(os.path.dirname(checkdir),
+                         portable.checks_root(self.home))
+        with open(os.path.join(checkdir, portable.CHECK_REQUEST),
+                  encoding='utf-8') as fh:
+            req = json.load(fh)
+        self.assertEqual((req['syx'], req['baseline'], req['timing'],
+                          req['device']), (self.src, stock.syx, True, 'dt1'))
+        dialog = app.jobs[checkdir].dialog
+        self.assertEqual(app.jobs[checkdir].kind, 'check')
+        os.makedirs(os.path.join(checkdir, 'work', 'build'))   # left by a crash
+        app._read_worker(checkdir, self.next_proc)
+        app._poll()
+        self.assertNotIn(checkdir, app.jobs)
+        self.assertIs(dialog.passed, True)
+        self.assertEqual(dialog.step_var.get(), 'PASS')
+        self.assertEqual(dialog.about_var.get(), portable.CHECK_PASSED)
+        self.assertIn('Build  boot       passed', dialog.text.lines)
+        self.assertIn('         intro done', dialog.text.lines)
+        self.assertIn('build: PASS', dialog.text.lines)
+        self.assertFalse(os.path.exists(os.path.join(checkdir, 'work')))
+        # The firmware list is untouched by a check.
+        self.assertEqual(sorted(app.infos), [os.path.basename(stock.root)])
+
+    def test_a_failing_check_says_so(self):
+        self.dialogs.path = self.src
+        app, _ = self.launch(release('untested'))
+        self.next_proc = FakeProc(self.check_lines(False), rc=0)
+        app.check()
+        self.assertEqual(app.check_setup.base_var.get(), 'none')  # no stock here
+        self.assertIn('About 2 minutes', app.check_setup.estimate_var.get())
+        app.check_setup.start()
+        [(_mode, checkdir, _extra, _piped)] = self.spawned
+        dialog = app.jobs[checkdir].dialog
+        app._read_worker(checkdir, self.next_proc)
+        app._poll()
+        self.assertIs(dialog.passed, False)
+        self.assertEqual(dialog.step_var.get(), 'FAIL')
+        self.assertEqual(dialog.about_var.get(), portable.CHECK_FAILED)
+
+    def test_a_check_that_crashed_shows_why(self):
+        self.dialogs.path = self.src
+        app, _ = self.launch(release('untested'))
+        self.next_proc = FakeProc([], rc=0xC0000005)
+        app.check()
+        app.check_setup.start()
+        [(_mode, checkdir, _extra, _piped)] = self.spawned
+        dialog = app.jobs[checkdir].dialog
+        app._read_worker(checkdir, self.next_proc)
+        app._poll()
+        self.assertEqual(dialog.step_var.get(), 'The check could not finish')
+        self.assertTrue(any('access violation' in line
+                            for line in dialog.text.lines))
+
+    def test_check_refuses_what_it_cannot_boot(self):
+        self.dialogs.path = self.src
+        app, _ = self.launch(release('unsupported', short=None,
+                                     product='Syntakt'))
+        app.check()
+        self.assertEqual(self.dialogs.calls,
+                         [('showerror', 'Cannot check this firmware')])
+        self.assertIsNone(app.check_setup)
+        self.assertEqual(self.spawned, [])
+
+    def test_choosing_another_stock_file(self):
+        self.dialogs.path = self.src
+        app, _ = self.launch(release('untested'))
+        app.check()
+        setup = app.check_setup
+        other = os.path.join(self.tmp, 'Digitakt_OS9.99-stock.syx')
+        with open(other, 'wb') as fh:
+            fh.write(SYX_BYTES)
+        self.dialogs.path = other
+        setup.base_var.set(setup.OTHER)
+        setup._choose_other()
+        self.assertEqual(setup.baseline(), other)
+        self.assertIn('Stock: Digitakt_OS9.99-stock.syx', setup.estimate_var.get())
+        self.dialogs.path = ''                        # a second try, cancelled
+        setup._choose_other()
+        self.assertEqual(setup.baseline(), other)     # the first choice stands
+
+    def test_cancelling_the_stock_file_choice_goes_back(self):
+        self.dialogs.path = self.src
+        app, _ = self.launch(release('untested'))
+        app.check()
+        setup = app.check_setup
+        self.dialogs.path = ''
+        setup.base_var.set(setup.OTHER)
+        setup._choose_other()
+        self.assertEqual(setup.base_var.get(), setup.NONE)
+        self.assertIsNone(setup.baseline())
+
+    def test_quit_with_a_check_running(self):
+        self.dialogs.path = self.src
+        app, root = self.launch(release('untested'))
+        app.check()
+        app.check_setup.start()
+        self.dialogs.answers['Check still running'] = None
+        app.quit()
+        self.assertFalse(root.destroyed)
+        self.dialogs.answers['Check still running'] = True
         app.quit()
         self.assertTrue(root.destroyed and self.next_proc.terminated)
 

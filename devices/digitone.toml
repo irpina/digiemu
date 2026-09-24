@@ -308,6 +308,23 @@ layout = "single"
 # the DSP's eight voices for the block out of the shared RAM by eDMA channel
 # 47 (started through SSRT), mixes them with its own effects, and writes the
 # next block's voice parameters back the same way.
+[boot]
+# The front-panel card type the bootstrap asks the panel controller for
+# (`70 00`) and checks: anything else is its "WRONG CARD". Digitone (0xA for a Digitone Keys): 8.
+# emu/bootrom.py answers with it when it runs the bootstrap.
+ui_card = 8
+# Board straps the bootstrap reads. Bit 3 of 0xEC09401B is low on a
+# Digitone Keys and high on a Digitone (the bootstrap's 0x80000416, which
+# sets boot flag bit 19 for the Keys); unmodelled GPIO reads zero.
+straps = { "0xEC09401B" = 0x08 }
+
+[memory]
+# The DDR the board has, from the bootstrap's own DDR controller setup
+# (tools/ddr_geometry.py: 13 row + 10 column bits, 8 banks, one x8 part).
+# The strict check decodes the SDRAM space with it (emu/strict.py), so the
+# firmware's cached and uncached views of the same memory are one memory.
+ddr_mb = 64
+
 [audio]
 ssi_profile = "digitakt-mk1"
 request_hz = 48000

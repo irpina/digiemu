@@ -127,6 +127,22 @@ MAINLOOP_DEFAULT = 0x4000B6E4
 MAIN_LOAD = 0x40000400
 GUI_FLAGS = dict(unblock=True, softfloat=True, bitmap=True, dsp=True)
 
+# first_run's `options` keys that are not longrun.build arguments: where the
+# cold boot starts (a bootstrap handoff snapshot, emu/bootrom.py), and a
+# callable(m, ev) each stage calls on its machine before running it (strict
+# mode, emu/strict.py).
+_STAGE_KEYS = ('start_from', 'on_machine')
+
+
+def _build_options(options):
+    return {k: v for k, v in (options or {}).items() if k not in _STAGE_KEYS}
+
+
+def _on_machine(options, m, ev, stage):
+    hook = (options or {}).get('on_machine')
+    if hook is not None:
+        hook(m, ev, stage)
+
 
 @dataclass
 class Event:
@@ -551,7 +567,7 @@ class IntroResult:
 def boot_to_ui(syx, rung, out=None, progress=None, cancel=None, *,
                min_lit=1200, budget=600_000_000, chunk=20_000_000, png=None,
                intro_channels=(3,), except_frame_sem=True, step='intro',
-               fast=False):
+               fast=False, options=None):
     """Boot from a ladder rung to a live UI; save it to `out` once live.
 
     fast=True steps with longrun's block-bounded fast stepper, as the panel
@@ -593,9 +609,13 @@ def boot_to_ui(syx, rung, out=None, progress=None, cancel=None, *,
     # Always the GUI's flag set: this exists to produce gui.snap, and
     # unblock_except is part of the checkpoint manifest, so a snapshot built
     # under one policy will not reopen under the other.
-    m, ev, st, pc, inq, at = longrun.build(
-        rung, syx=syx, unblock=True, softfloat=True, bitmap=True, dsp=True,
-        unblock_except=except_sems, deferred_components=('timers',))
+    # `options` (emu/fwcheck.py) may turn the shortcuts off or add the DDR
+    # model: a check's own chain, never the app's.
+    flags = dict(GUI_FLAGS, unblock_except=except_sems,
+                 deferred_components=('timers',))
+    flags.update(_build_options(options))
+    m, ev, st, pc, inq, at = longrun.build(rung, syx=syx, **flags)
+    _on_machine(options, m, ev, step)
     try:
         # PIT3 paces the intro; PIT0/PIT2 and the DMA timers stay held until
         # the intro is over, because PIT2 during the intro stops the OS tasks
@@ -706,7 +726,7 @@ def settle_ui(syx, snap, out=None, progress=None, cancel=None, *,
               min_lit=1200, quiet=120, budget=3_000_000_000,
               chunk=50_000_000, png=None, except_frame_sem=True,
               step='settle', expected=SETTLE_EXPECTED, fast=False,
-              fast_idle=False):
+              fast_idle=False, options=None):
     """Run on until the UI has SETTLED, then save it to `out`.
 
     fast=True uses the fast stepper (see boot_to_ui) and fast_idle=True lets
@@ -747,8 +767,10 @@ def settle_ui(syx, snap, out=None, progress=None, cancel=None, *,
         flags['unblock_except'] = (prof.frame_sem,)
     if fast_idle:
         flags['fast_idle'] = True
+    flags.update(_build_options(options))
     m, ev, st, pc, inq, at, pits = open_snapshot(
         snap, syx, prof, verbose=False, **flags)
+    _on_machine(options, m, ev, step)
     try:
         restored = ev['checkpoint_components'].get('timers') is pits
         emit('note', '  timers: restored saved cadence' if restored
@@ -1230,7 +1252,7 @@ def _set_aside(path):
 
 
 def cold_boot(paths, progress=None, cancel=None, *, chunk=None, limit=None,
-              idle_fraction=None):
+              idle_fraction=None, options=None):
     """The first run's cold boot: from reset to where the firmware PARKS.
 
     -> {'stop', 'parked_at', 'card_writes', 'tasks', 'native'}; the snapshot
@@ -1269,9 +1291,19 @@ def cold_boot(paths, progress=None, cancel=None, *, chunk=None, limit=None,
         os.remove(old)                  # the old ladder's rungs; unused now
     box = {}
     try:
+        # options: only the Machine's own (ddr) reach the cold boot; it
+        # has no host shortcuts to turn off. start_from is a snapshot taken
+        # where the real bootstrap hands over to the OS (emu/bootrom.py), to
+        # start from instead of the emulator's direct load.
+        opts = options or {}
+        cold = {k: v for k, v in opts.items() if k in ('ddr',)}
+        if opts.get('start_from'):
+            cold['handoff'] = opts['start_from']
         m, st, _ = dspboot.run(paths.syx, img, limit=None, extra_hook=None,
                                fast=True, coverage=False, verbose=False,
-                               machine_out=box, sdgate=True, esdhc=True)
+                               machine_out=box, sdgate=True, esdhc=True,
+                               **cold)
+        _on_machine(options, m, box.get('st'), 'ladder')
         pc = box['start_pc']
         budget = native.NativeBudget(m.uc) if native.budget_available(m.uc) \
             else None
@@ -1406,7 +1438,7 @@ def _stage_ok(stages, name, inputs, outputs):
             and all(os.path.exists(p) for p in outputs))
 
 
-def first_run(paths, progress=None, cancel=None):
+def first_run(paths, progress=None, cancel=None, options=None):
     """Run every stage that does not verify; -> the gui.snap path.
 
     Must be called with os.environ already holding paths.env() (checked).
@@ -1622,7 +1654,8 @@ def first_run(paths, progress=None, cancel=None):
             # sector 0 whether to install its factory content.
             clear_half_install(paths.card, vouched, _emitter(p, 'ladder'))
             fresh = _sector0(paths.card)[:4] != BEEFBACE
-            res = cold_boot(paths, progress=p, cancel=cancel)
+            res = cold_boot(paths, progress=p, cancel=cancel,
+                            options=options)
             return dict(res, first_boot=fresh)
         res, secs = stage('ladder', ladder)
         # first_boot: the cold boot found an uninitialised +Drive, so the
@@ -1640,7 +1673,8 @@ def first_run(paths, progress=None, cancel=None):
             res = boot_to_ui(paths.syx, rung, out=paths.gui_raw, progress=p,
                              cancel=cancel, png=None,
                              intro_channels=channels,
-                             except_frame_sem=except_sem, fast=True, **INTRO)
+                             except_frame_sem=except_sem, fast=True,
+                             options=options, **INTRO)
             if not res.up or res.saved is None:
                 raise StepFailed('intro', 'no live user interface after %dM '
                                  'instructions (lit %d, mainloop %d)'
@@ -1659,7 +1693,7 @@ def first_run(paths, progress=None, cancel=None):
             res = settle_ui(paths.syx, paths.gui_raw, out=paths.gui,
                             progress=p, cancel=cancel, png=None,
                             except_frame_sem=except_sem, fast=True,
-                            fast_idle=True, **SETTLE)
+                            fast_idle=True, options=options, **SETTLE)
             if res.settled_at is None or res.saved is None:
                 raise StepFailed('settle', 'not settled after %dM '
                                  'instructions (%d frames, %d overlays, '
