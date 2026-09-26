@@ -159,11 +159,11 @@ class Machine:
         and 1.7.11 gives it one chip select and an 8-bit port: 16 to 256 MB.
         The controller decodes only the address bits its part needs, so the
         fitted memory repeats through the whole space, and firmware uses that
-        on purpose. Digitakt mk1 has 64 MB (tools/ddr_geometry.py, from the
-        bootstrap's own DDRMC writes); its OS keeps its stack at 0x47FFxxxx,
-        which is 0x43FFxxxx, and reads DMA buffers through 0x48000000 and up,
-        which ACR0 = 0x4007E020 leaves cache-inhibited: an uncached view of
-        the same memory.
+        on purpose. Digitakt mk1 has 128 MB (tools/ddr_geometry.py, from the
+        bootstrap's own DDRMC writes); its OS keeps its stack at the top,
+        0x47FFxxxx, and reads DMA buffers through 0x48000000 and up, which
+        ACR0 = 0x4007E020 leaves cache-inhibited: an uncached view of the
+        same memory.
 
         Without this every 1 MB page of the space is memory of its own, so a
         write through one alias is invisible through another: a DMA buffer

@@ -44,6 +44,9 @@ import sys
 import time
 
 MB = 1 << 20
+# The mk1 products' DDR (devices/*.toml [memory] ddr_mb), for a device
+# file that does not say.
+DEFAULT_DDR = 128 * MB
 # The block the bootstrap reads at 0x380000 (emu/bootrom.py): the container
 # written at 0x80000 must end before it.
 FLASH_LIMIT = 0x380000
@@ -269,7 +272,7 @@ def check_bootloader(paths, device, stage, handoff_path):
     boot = open(os.path.join(paths.sections, 'section_2_DSP.bin'), 'rb').read()
     main = open(paths.main_img, 'rb').read()
     r = bootrom.boot(paths.syx, boot, main,
-                     ddr=device.ddr_bytes or 64 * MB,
+                     ddr=device.ddr_bytes or DEFAULT_DDR,
                      ui_card=device.ui_card if device.ui_card is not None
                      else 4, straps=device.straps,
                      groups=device.button_groups())
@@ -312,11 +315,11 @@ def check_boot(paths, device, stage, handoff_path, strict_boot=True,
     monitors = []
 
     def on_machine(m, ev, step):
-        s = strictmod.Strict(m, ddr_size=device.ddr_bytes or 64 * MB,
+        s = strictmod.Strict(m, ddr_size=device.ddr_bytes or DEFAULT_DDR,
                              stop=False,
                              prescanned=(0x40000400, 0x40000400 + main_len))
         monitors.append((step, s, ev))
-    options = {'ddr': device.ddr_bytes or 64 * MB}
+    options = {'ddr': device.ddr_bytes or DEFAULT_DDR}
     if handoff_path:
         options['start_from'] = handoff_path
     if strict_boot:
@@ -351,7 +354,7 @@ def check_run(paths, device, stage, snapshot, steps, *, timing=True,
             tkw['fsys'] = fsys
     s = Session(snapshot, paths.syx, hle=False, timing=tkw,
                 strict={'stop': stop},
-                ddr=device.ddr_bytes or 64 * MB)
+                ddr=device.ddr_bytes or DEFAULT_DDR)
     try:
         marks = run_script(s, steps)
         stage.facts['emulated_ms'] = round(s.ms, 1)

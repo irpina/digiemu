@@ -3515,21 +3515,49 @@ exact fingerprint:
 | `0xFC080000`-`0xFC08C000` | PIT0-PIT3 |
 | `0xFC090000` | EPORT |
 
-### Flash and DDR capacity **[V]**
+### Flash and DDR capacity **[V][C]**
 
 Both come out of the firmware's own code; neither needs a datasheet or a probe.
 
-DDR is **64 MiB**, from the bootstrap's own DDRMC writes:
+DDR is **128 MiB**, from the bootstrap's own DDRMC writes:
 
 ```
 DDR_CR04 @0xFC0B8010 = 0x00010101   ; bit 8 8BNK=1     -> 8 banks
-DDR_CR15 @0xFC0B803C = 0x02000103   ; ADDPINS=2        -> rows = 15-2 = 13
+DDR_CR15 @0xFC0B803C = 0x02000103   ; ADDPINS=2        -> rows = 16-2 = 14
 DDR_CR16 @0xFC0B8040 = 0x02000407   ; COLSIZ=2         -> cols = 12-2 = 10
 ```
 
-with the controller's fixed 1 chip select and x8 datapath: `2^23 * 8 * 1 =
-67,108,864`. The init sequence is byte-identical on both devices.
+with the controller's fixed 1 chip select and x8 datapath: `2^24 * 8 * 1 =
+134,217,728`. The init sequence is byte-identical on both devices.
 `tools/ddr_geometry.py` re-derives this from any bootstrap image.
+
+**[C]** This said 64 MiB until 2026-09-24, from rows = 15 - 2. ADDPINS
+counts from 16: MCF54418RM Table 21-20 defines it as "the difference between
+the maximum number of address pins configured (16) and the actual number of
+pins used", and `DDR_CR23[MAXROW]` "always reads 0x10" (Table 21-28). The 15
+in section 21.5.2.2 is how many address lines reach the pins. The OS agrees
+with 128 MiB, and could not run in 64:
+- its sample loader `FUN_400ec6d2` fills a pool at `0x4bbaf5f0` (physical
+  `0x43BAF5F0`) with up to `0x4000050` bytes, 64 MB plus the 80-byte header
+  and trailer, which ends at `0x47BAF640` (the sample screen's "SAMPLE TIME:
+  64MB", `docs/mk1/10-plusdrive.md`);
+- its initial stack, `0x48000000`, is the top of 128 MiB;
+- ACR0 caches exactly `0x40000000-0x47FFFFFF`, and the uncached window it
+  reads buffers through starts at the next 128 MiB alias.
+The 64 MB model folded `0x44000000-0x47FFFFFF` onto the OS. The checks run
+under it passed because no session had loaded more than the factory
+samples, which sit at the bottom of the pool.
+
+Checked a second time against the images (2026-09-24): the three writes
+are at `0x80000774`-`0x800007fa` (and `DDR_CR08` sets REDUC, the 8-bit
+datapath); the OS itself sets its SP to `0x48000000` (`0x400004f2`) and
+ACR0 (`0x40000564`); and the sample pool is a bump allocator over
+`[0x4bbaf5f0, 0x4fbaf640)`, the uncached view of `0x43BAF5F0`-`0x47BAF640`,
+with its hard end checked at `0x400ec384` and its free space (`end - last
+pointer - last size`, or `0x4000050` when empty) at `0x400eb7a0`. With 64 MB
+the pool would wrap onto the OS code (`0x40000400`-`0x4025CA40`) and the
+area its entry code zeroes (`0x40252000`-`0x439D0000`, about 58 MB, at
+`0x400004ba`-`0x400004dc`).
 
 NOR flash is **16 MiB**. The bootstrap issues RDID (`0x9F`) and dispatches on
 the 5 ID bytes at `FUN_800024ec`; only the branch matching mfg `0x01`, id
@@ -3963,7 +3991,7 @@ the flash. **[V]**
 
 1. The PLL: it waits on `PLL_SR` LOCK (bit 4).
 2. The crossbar, the pins, the interrupt controller.
-3. The DDR controller: it writes every control register (the 64 MB
+3. The DDR controller: it writes every control register (the 128 MB
    geometry `tools/ddr_geometry.py` decodes), then polls `DDR_CR27`
    (`0xFC0B806C`) for bit 3 up to 1000 times. If the bit never sets it
    records a DDR failure (`0x80007706`) and later halts.
@@ -4019,17 +4047,18 @@ bootstraps pass **`0x00140000`**. The emulator's direct start passes 0.
 The Digitakt OS with `0x40` set skips its normal init (`0x400691da`) and
 ends in `bra.b` to itself at `0x4006932e`.
 
-### The DDR is used through its aliases **[V]**
+### The DDR is used through its aliases **[V][C]**
 
-- DDR is 64 MB on both mk1 products (one x8 part, per the DDRMC setup
-  above). The controller repeats it through `0x40000000-0x7FFFFFFF`.
+- DDR is 128 MB on both mk1 products (one x8 part, per the DDRMC setup
+  above; it said 64 until 2026-09-24). The controller repeats it through
+  `0x40000000-0x7FFFFFFF`.
 - ACR0 is `0x4007E020`: `0x40000000-0x47FFFFFF` copyback, everything else
   cache-inhibited (`CACR` `0xA50CE100`).
 - The firmware relies on the aliases:
-  - its initial stack is `0x48000000` (the top of `0x47Fxxxxx`, which is
-    `0x43Fxxxxx`);
-  - the SSI transmit buffer is at `0x4BA8F080`;
-  - it reads buffers through the uncached `0x4Bxxxxxx` window.
+  - its initial stack is `0x48000000`, the top of the part itself;
+  - the SSI transmit buffer is at `0x4BA8F080` (`0x43A8F080`);
+  - it reads buffers, the sample pool among them, through the uncached
+    `0x48000000-0x4FFFFFFF` window.
 - Saved sessions from the app, which gives every alias its own memory,
   hold no data written through two aliases of one location.
 - Merging such a session's aliases into one memory broke the audio. Boot
@@ -4060,9 +4089,104 @@ ends in `bra.b` to itself at `0x4006932e`.
 ### The audio render's cost in core cycles **[V][D]**
 
 Measured with `emu/cftiming.py` (the MCF54418RM 3.3.5 tables; zero-wait
-memory, no pairs), on Digitakt 1.53 with one voice playing:
+memory, no pairs), on Digitakt 1.53 playing its factory pattern:
 - The render is the forced vector 191 (the SSI's `FORCE_VECTOR`).
 - It costs 100,300 cycles on average and 103,640 at worst, in each
   0.667 ms period of 166,685 cycles at 250 MHz: a margin of 38%.
 - The transmit DMA's vector 174 takes about 40 cycles.
 - The CPU is 62% busy, at 1.57 cycles per instruction.
+
+**[C]** This said "with one voice playing". That run was silent: the
+emulated card has no `/factory` samples, so the factory kit plays nothing.
+The next section measures it with samples sounding on all eight tracks:
+the render costs the same.
+
+### Stock 1.53 under load: what a custom build has to work with **[D]**
+
+Measured 2026-09-24 in emulation, under the 128 MB DDR model and strict
+mode, from a stock cold boot through the real bootloader. The load was
+built from the panel, and each step was checked on screen:
+- eight synthetic 3 s samples on the card, loaded into the project and
+  assigned one to each audio track;
+- a trig on every step of all eight tracks (the factory pattern's shorter
+  tracks, 10 and 12 steps, keep their lengths);
+- the tempo raised to 213 BPM;
+- on every track, overdrive, delay send, reverb send, bit reduction and
+  LFO depth at full.
+The audio was checked to be sounding (RMS 21,182 at full load, clipping).
+The probe is a scratch script, not a repo tool.
+
+**CPU.** The render costs the same whatever plays:
+
+| state | render mean | render worst | margin | CPU busy |
+|---|---|---|---|---|
+| stopped | 100,298 | 101,123 | 39.3% | 61.7% |
+| factory pattern | 100,104 | 103,472 | 37.9% | 61.7% |
+| 8 tracks, every step | 99,057 | 103,213 | 38.1% | 61.0% |
+| all of the above, FX at full | 99,081 | 103,343 | 38.0% | 61.2% |
+
+The engine runs all eight voices and the FX every 0.667 ms block,
+sounding or not. Everything else (UI, sequencer, the other interrupts)
+costs 1-2% of the CPU. So the headroom does not depend on what the user
+plays:
+- about 63,000 cycles (250 us) of every audio block;
+- about 38% of the CPU overall, roughly 95 MHz of the 250.
+
+The CPU never reads sample data. In a full-load session there were zero
+CPU reads of the sample pool and of the uncached window, only 64 uncached
+writes per block (the output). The samples reach the render some other way,
+presumably by DMA, so DDR latency on sample data does not load the render.
+The margin is still an upper bound: the model has zero-wait memory and no
+data-cache misses.
+
+**Memory** (of the 128 MB):
+
+| region | size | use |
+|---|---|---|
+| OS image `0x40000400`-`0x4025CA40` | 2.36 MB | code and initialised data |
+| zeroed at start `0x40252000`-`0x439D0000` | 57.5 MB | the heap, task stacks and buffers (below) |
+| heap `0x4299d6b0`-`0x4399d6b0` | 16 MB | buddy allocator; 15.08 MB free after boot |
+| sample pool `0x43BAF5F0`-`0x47BAF640` | 64 MB + 80 B | bump allocator; a sample takes its PCM + 80 B |
+| above the pool, to `0x48000000` | 4.3 MB | the reset stack's area; never written in these sessions |
+
+- **Heap** (control block `0x4020bb14`; `operator new` `0x400d4180`
+  rounds to a power of two, 16 bytes at least):
+  - The largest free block is 8 MB, and none of the loads above moved free
+    heap by more than 2 KB.
+  - A loaded sample costs 880 bytes of heap whatever its length (1, 20
+    and 120 s alike).
+  - A card that holds user samples at all costs about 1.5 MB at boot
+    (14.24 MB free instead of 15.08), the same for one file as for eight.
+- **Sample pool:** empty in the emulated factory state. On a device the
+  factory samples a project uses load into it.
+- **Message pool:** the free list at `0x421f6eec`, linked through `+0x48`,
+  had 127 messages free throughout.
+- **Task stacks** that boot creates with a size (their TASK_CREATE), at their
+  deepest over every session. The fill below each stack's top stayed zero,
+  so these are high-water marks:
+
+| priority | entry | used of size |
+|---|---|---|
+| 10 | `0x40002cfa` | 716 of 2,048 (35%) |
+| 1 | `0x40068eb6` | 3,044 of 16,384 (19%) |
+| 2 | `0x4008e4fa` | 1,196 of 16,384 (7%) |
+| 8 | `0x400e0fbc` | 812 of 16,384 (5%) |
+| 6 | `0x4000b266` | 2,164 of 163,840 (1%) |
+| 0, 5, 7, 7, 9 | | at most 252 bytes each |
+
+- **Never written in any session**, inside the zeroed area and outside the
+  heap: 4.53 MB at `0x421fc000`, 3.45 MB at `0x41d1a000`, 2.0 MB at
+  `0x4040d000`, 1.88 MB at `0x439d0000` (reached through the uncached
+  window), and smaller runs. They may be buffers for what these sessions
+  did not do (recording a sample, USB audio, song mode), so they are
+  candidates, not free memory. **[O]**
+
+What these sessions did not exercise:
+- the tempo's top (300 BPM);
+- LFO destinations on every track;
+- retrigs, MIDI traffic, USB audio and sampling;
+- a full sample pool.
+
+Since the render is fixed-cost, their effect would be on the tasks, which
+use 1-2% here. Tasks created after the boot's TASK_CREATE capture have no
+recorded stack size and are not in the table.

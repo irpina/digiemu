@@ -16,10 +16,16 @@ fix the physical geometry:
     DDR_CR15 (0xFC0B803C) bits 26-24  ADDPINS  max_row_bits - actual_row_bits
     DDR_CR16 (0xFC0B8040) bits 26-24  COLSIZ   max_col_bits - actual_col_bits
 
-and the datasheet gives the two "max" constants and the fixed geometry for
-this specific controller (RM section 21.5.2.2 / feature list 1.7.11):
+and the manual gives the two "max" constants and the fixed geometry for
+this specific controller:
 
-    max row bits = 15, max column bits = 12, chip selects = 1 (fixed),
+    max row bits = 16: ADDPINS is "the difference between the maximum number
+      of address pins configured (16) and the actual number of pins used"
+      (Table 21-20), and DDR_CR23[MAXROW] "always reads 0x10" (Table 21-28).
+      Section 21.5.2.2's "15 rows" is how many address lines reach the pins,
+      not the base ADDPINS counts from. This was 15 until 2026-09-24, which
+      halved every size decoded here: the mk1 products have 128 MB, not 64.
+    max column bits = 12 (DDR_CR20[MAXCOL]), chip selects = 1 (fixed),
     memory datapath = 8 bits / 1 byte (fixed, "single x8 DDR2 component")
 
 so the physical size is
@@ -49,8 +55,9 @@ LOAD_ADDRESS = 0x80000400
 START, END = 0x800006C0, 0x800008A0
 
 DDR_CR04, DDR_CR15, DDR_CR16 = 0xFC0B8010, 0xFC0B803C, 0xFC0B8040
-# Reviewed against the MCF5441x/MCF54418RM reference manual, chapter 21.
-MAX_ROW_BITS, MAX_COL_BITS, CHIP_SELECTS, DATAPATH_BYTES = 15, 12, 1, 1
+# MCF54418RM chapter 21: ADDPINS counts from 16 (Table 21-20, DDR_CR23
+# MAXROW), COLSIZ from 12 (DDR_CR20 MAXCOL).
+MAX_ROW_BITS, MAX_COL_BITS, CHIP_SELECTS, DATAPATH_BYTES = 16, 12, 1, 1
 # Values actually written in the two firmwares this project has (Digitakt II
 # 1.15C, Digitone II 1.10E) -- reviewed once; a different bootstrap build must
 # re-derive these, not silently reuse them.

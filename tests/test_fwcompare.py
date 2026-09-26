@@ -114,6 +114,18 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(fwcompare.first_divergence(
             [(0, a), (10, a)], [(0, a), (7, b)]), 7)
 
+    def test_the_first_frames_phase_is_not_a_difference(self):
+        """Builds booted separately draw their first frame at different
+        times after resuming (stock 1.53 at 75 ms, DT1_8_POLY_OSC at 373
+        ms, the same frames): only what both have drawn is compared."""
+        a, b = frame({(0, 0)}), frame({(0, 1)})
+        self.assertIsNone(fwcompare.first_divergence(
+            [(74.7, a), (1005.3, b)], [(373.3, a), (1005.3, b)]))
+        self.assertEqual(fwcompare.first_divergence(
+            [(74.7, a), (1005.3, b)], [(373.3, b)]), 373.3)
+        self.assertEqual(fwcompare.first_divergence([(5, a)], []), 5)
+        self.assertIsNone(fwcompare.first_divergence([], []))
+
     def test_diff_png(self):
         png = fwcompare.diff_png(frame({(0, 0)}), frame({(1, 1)}), scale=1)
         self.assertTrue(png.startswith(b'\x89PNG'))

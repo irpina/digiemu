@@ -25,6 +25,22 @@ class DdrTest(unittest.TestCase):
         self.assertEqual(m.ddr_physical(0x4BBAF630), 0x03BAF630)
         self.assertIsNone(m.ddr_physical(0x80000000))
 
+    def test_the_mk1s_128_mb(self):
+        """The mk1 part: 0x44000000 up is memory of its own (the upper half
+        of the 64 MB sample pool at 0x43BAF5F0), and the whole 128 MB repeats
+        from 0x48000000 (the uncached view, the stack's top)."""
+        m = Machine(ddr=128 * MB)
+        m.ensure(0x40000000)
+        m.ensure(0x44000000)
+        m.uc.mem_write(0x40000010, b'low!')
+        m.uc.mem_write(0x44000010, b'high')
+        self.assertEqual(bytes(m.uc.mem_read(0x40000010, 4)), b'low!')
+        for alias, want in ((0x48000010, b'low!'), (0x4C000010, b'high')):
+            m.ensure(alias)
+            self.assertEqual(bytes(m.uc.mem_read(alias, 4)), want)
+        self.assertEqual(m.ddr_physical(0x47BAF640), 0x07BAF640)
+        self.assertEqual(m.ddr_physical(0x4BBAF5F0), 0x03BAF5F0)
+
     def test_guest_writes_through_one_alias_read_through_another(self):
         m = Machine(ddr=64 * MB)
         m.ensure(0x40200000)

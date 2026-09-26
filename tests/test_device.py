@@ -139,10 +139,11 @@ class ParseTest(unittest.TestCase):
                 with self.assertRaises(device.DeviceError, msg=bad):
                     device.load(path)
 
-    def test_the_mk1_products_have_64_mb(self):
+    def test_the_mk1_products_have_128_mb(self):
+        # Was 64: tools/ddr_geometry.py counted ADDPINS from 15, not 16.
         for name in ('digitakt.toml', 'digitone.toml'):
             dev = device.load(os.path.join(DEVICES, name))
-            self.assertEqual(dev.ddr_bytes, 64 << 20, name)
+            self.assertEqual(dev.ddr_bytes, 128 << 20, name)
 
     def test_boot_panel_facts(self):
         """[boot]: what the panel tells a bootstrap (emu/bootrom.py)."""

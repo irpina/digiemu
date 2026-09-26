@@ -147,7 +147,7 @@ class Strict:
     cycles: callable -> core cycles elapsed, for the watchdog.
     """
 
-    def __init__(self, m, ddr_size=64 * MB, rambar=0x80000000, stop=True,
+    def __init__(self, m, ddr_size=128 * MB, rambar=0x80000000, stop=True,
                  clock=None, cycles=None, prescanned=None):
         self.m = m
         self.ddr_size = int(ddr_size)
