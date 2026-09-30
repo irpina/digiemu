@@ -98,10 +98,11 @@ APP_MODULES = (
     'dt2.coldfire',
 )
 # The standard library and bindings that emu/portable.py, bootstrap.py,
-# dtpanel.py and gui.py import inside functions.
+# dtpanel.py, gui.py and midi.py import inside functions. rtmidi is
+# python-rtmidi, MIDI's host side: optional from source, but the app has it.
 LIB_MODULES = (
     'ctypes', 'ctypes.wintypes', 'logging', 'tkinter', 'tkinter.filedialog',
-    'tkinter.messagebox', 'tkinter.ttk', 'unicorn', 'capstone',
+    'tkinter.messagebox', 'tkinter.ttk', 'unicorn', 'capstone', 'rtmidi',
 )
 REQUIRED_MODULES = APP_MODULES + LIB_MODULES
 # Imported inside those functions too, but never in a PYZ archive, so not

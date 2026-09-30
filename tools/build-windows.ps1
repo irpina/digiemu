@@ -16,10 +16,10 @@
 #     their dist-info, from -SitePackagesFrom. The source is only read from,
 #     never changed. hooks-contrib registers through its entry point, and
 #     PyInstaller checks versions through importlib.metadata, which is why
-#     the dist-info folders are copied too. unicorn and capstone are
-#     mirrored from this repo's .venv on every run, so a rebuilt patched DLL
-#     is always the one bundled. The DLL backups, include\ and the 50 MB
-#     unicorn.lib are left out.
+#     the dist-info folders are copied too. unicorn, capstone and rtmidi
+#     (python-rtmidi, MIDI's host side) are mirrored from this repo's .venv
+#     on every run, so a rebuilt patched DLL is always the one bundled. The
+#     DLL backups, include\ and the 50 MB unicorn.lib are left out.
 #  2. Verify: pip check, the PyInstaller version, the hooks-contrib entry
 #     point, the unicorn.dll hash against this repo's .venv, the compat check
 #     (by behaviour) in the build venv, and that the app code compiles on
@@ -142,13 +142,19 @@ if (-not (Test-Path -LiteralPath $Py)) {
     Copy-Item -LiteralPath (Join-Path $SitePackagesFrom $f) -Destination $BvSP
   }
 }
-# unicorn and capstone: mirrored from the dev venv every time.
+# unicorn, capstone and rtmidi: mirrored from the dev venv every time.
+if (-not (Test-Path -LiteralPath (Join-Path $DevSP 'rtmidi'))) {
+  Fail "no python-rtmidi in $DevVenv (pip install -r requirements.txt)"
+}
 Mirror (Join-Path $DevSP 'unicorn') (Join-Path $BvSP 'unicorn') @('/MIR', '/XD', '__pycache__', 'include', '/XF', 'unicorn.lib', '*.5patch', '*.6patch', '*.pre-fractional')
 Mirror (Join-Path $DevSP 'capstone') (Join-Path $BvSP 'capstone') @('/MIR', '/XD', '__pycache__', 'include')
+# The extension's import library (.lib) is for linking against it, not for running.
+Mirror (Join-Path $DevSP 'rtmidi') (Join-Path $BvSP 'rtmidi') @('/MIR', '/XD', '__pycache__', '/XF', '*.lib')
 # unicorn\lib holds exactly unicorn.dll, whatever backups the dev venv grows.
 Get-ChildItem -LiteralPath (Join-Path $BvSP 'unicorn\lib') | Where-Object { $_.Name -ne 'unicorn.dll' } |
   ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
-foreach ($pkg in @('unicorn', 'capstone')) {
+# The dist name is python-rtmidi; its dist-info folder is python_rtmidi-*.
+foreach ($pkg in @('unicorn', 'capstone', 'python_rtmidi')) {
   $d = One $DevSP "$pkg-*.dist-info"
   Get-ChildItem -LiteralPath $BvSP -Filter "$pkg-*.dist-info" | Where-Object { $_.Name -ne $d.Name } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }

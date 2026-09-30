@@ -35,7 +35,8 @@ Why each piece is here:
     PYTHONUTF8=1 for the dev children. Paths and pipes are then UTF-8
     whatever the Windows code page is.
   * datas carry the device files (the frozen app reads them from
-    _internal/devices), plus the licences. patches/ is there because the
+    _internal/devices), plus the licences (Python's, capstone's, and
+    python-rtmidi's with RtMidi's). patches/ is there because the
     DLL is a modified GPL build and must ship with the source of its
     changes.
   * hiddenimports are bundle_guard.REQUIRED_MODULES: what the app imports
@@ -143,6 +144,8 @@ datas = [
     (os.path.join(ROOT, 'patches', '*.patch'), 'patches'),
     (os.path.join(ROOT, 'patches', 'README.md'), 'patches'),
     (_dist_file('capstone', r'LICENSE(\.txt)?'), os.path.join('licenses', 'capstone')),
+    # python-rtmidi's LICENSE.md also carries RtMidi's, which it links in.
+    (_dist_file('python-rtmidi', r'LICENSE(\.md|\.txt)?'), os.path.join('licenses', 'python-rtmidi')),
     (_python_license(), os.path.join('licenses', 'python')),
     (BUILD_INFO, '.'),
 ]

@@ -89,6 +89,12 @@ Digitone mk1 OS 1.43, SHA-256
 - **macOS, from source:** live audio goes through AudioQueue
   (`emu/audioout.py`, contributed in PR #4). It has not been run here, and
   CI has no macOS job.
+- **MIDI on Windows.** Windows has no virtual MIDI ports, so a DAW connects
+  through a loopback port (loopMIDI, for example), picked like a device.
+  Checked on Windows 11, from source and in the app: the devices are listed
+  and picked by name, and the choice comes back on the next start. MIDI
+  data in and out through a device, and a round trip through a loopback
+  port, have not been tested on Windows yet.
 - **The app is unsigned**, and its Control Flow Guard flag is cleared,
   because Unicorn's `longjmp` fails under it.
 - **Digitone Keys.** The OS file is shared, but digiemu runs it as a plain

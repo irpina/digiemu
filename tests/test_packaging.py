@@ -528,7 +528,7 @@ class SpecTest(unittest.TestCase):
         self.assertIn('tools.machinepatch', kw['excludes'])
         dests = {os.path.normpath(d) for _s, d in kw['datas']}
         for d in ('devices', '.', 'patches', os.path.join('licenses', 'capstone'),
-                  os.path.join('licenses', 'python')):
+                  os.path.join('licenses', 'python-rtmidi'), os.path.join('licenses', 'python')):
             self.assertIn(os.path.normpath(d), dests)
         names = {os.path.basename(s) for s, _d in kw['datas']}
         self.assertTrue({'*.toml', 'LICENSE', '*.patch', 'README.md'} <= names)
@@ -800,9 +800,10 @@ class LazyImportTest(unittest.TestCase):
     bundle_guard.REQUIRED_MODULES, and so is a hidden import, required in
     both archives and imported by the frozen self-test. Found by reading
     the source: the emu/dt2 modules reachable from emu.portable and the
-    entry script, and for the standard library and bindings, the four
-    modules that make up the app itself."""
-    APP_SOURCES = ('emu.portable', 'emu.bootstrap', 'emu.dtpanel', 'emu.gui')
+    entry script, and for the standard library and bindings, the modules
+    that make up the app itself (MIDI's among them)."""
+    APP_SOURCES = ('emu.portable', 'emu.bootstrap', 'emu.dtpanel', 'emu.gui',
+                   'emu.midi')
     ROOTS = ('emu', 'dt2')
 
     @classmethod
@@ -888,6 +889,7 @@ class LazyImportTest(unittest.TestCase):
             self.assertIn(m, seen)               # the scan really reached the app
         self.assertIn('emu.bootstrap', lazy_repo)
         self.assertIn('tkinter.ttk', lazy_lib)
+        self.assertIn('rtmidi', lazy_lib)        # MIDI's host side, in the app
         missing = {m: w for m, w in lazy_repo.items() if m not in guard.APP_MODULES}
         self.assertEqual(missing, {}, 'add these to bundle_guard.APP_MODULES and '
                                       'digiemu_main.IMPORTS')

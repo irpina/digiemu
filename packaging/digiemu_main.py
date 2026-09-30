@@ -61,7 +61,7 @@ IMPORTS = (
     'dt2.elz',
     'dt2.coldfire',
     'ctypes', 'ctypes.wintypes', 'logging', 'tkinter', 'tkinter.filedialog',
-    'tkinter.messagebox', 'tkinter.ttk', 'unicorn', 'capstone',
+    'tkinter.messagebox', 'tkinter.ttk', 'unicorn', 'capstone', 'rtmidi',
 )
 
 _log = None                     # the launcher.log stream when stdio was None

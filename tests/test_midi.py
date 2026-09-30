@@ -113,6 +113,14 @@ class HostNamesTest(unittest.TestCase):
         self.assertEqual(midi.port_name('IAC Driver Bus 1'),
                          'IAC Driver Bus 1')
 
+    def test_port_name_drops_the_winmm_index(self):
+        # As RtMidi lists them on Windows: the name, a space, the index.
+        self.assertEqual(midi.port_name('Elektron Digitakt 2', winmm=True),
+                         'Elektron Digitakt')
+        self.assertEqual(midi.port_name('FM-1 Midi 1', winmm=True), 'FM-1 Midi')
+        self.assertEqual(midi.port_name('loopMIDI Port 1 3', winmm=True),
+                         'loopMIDI Port 1')           # only the index goes
+
     def test_settings_live_in_the_firmware_folder(self):
         import os
         import tempfile
@@ -332,15 +340,25 @@ _REAL_RTMIDI = midi._rtmidi     # before any test swaps in a fake
 
 
 class _FakeRtmidi:
-    """python-rtmidi's surface HostMidi uses, recording what is sent."""
-    def __init__(self, devices=('Synth 20:0',)):
+    """python-rtmidi's surface HostMidi uses, recording what is sent. `api`
+    is the backend the ports report (ALSA's number by default); WinMM's has
+    no virtual ports."""
+    API_LINUX_ALSA, API_WINDOWS_MM = 2, 4
+
+    def __init__(self, devices=('Synth 20:0',), api=API_LINUX_ALSA):
         self.devices = list(devices)
+        self.api = api
         self.outs = []
         rt = self
         class Port:
             def __init__(self, name=None):
                 self.name, self.opened, self.sent = name, None, []
+            def get_current_api(self):
+                return rt.api
             def open_virtual_port(self, name):
+                if rt.api == rt.API_WINDOWS_MM:
+                    raise NotImplementedError('Virtual ports are not supported '
+                                              'by the Windows MultiMedia API.')
                 self.opened = 'virtual'
             def open_port(self, index):
                 self.opened = rt.devices[index]
@@ -409,6 +427,52 @@ class HostOutTest(unittest.TestCase):
         with mock.patch.dict('sys.modules', {'rtmidi': None}):
             with self.assertRaisesRegex(OSError, 'extra midi'):
                 _REAL_RTMIDI()
+
+
+class HostWindowsTest(unittest.TestCase):
+    """HostMidi on RtMidi's WinMM backend: no virtual ports, and port names
+    that carry an index which moves when devices come and go."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        self.rt = _FakeRtmidi(devices=('Focusrite USB MIDI 0', 'Elektron Digitakt 1'),
+                              api=_FakeRtmidi.API_WINDOWS_MM)
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('DIGIEMU_MIDI_IN', None)
+        os.environ.pop('DIGIEMU_MIDI_OUT', None)
+        patch = mock.patch.object(midi, '_rtmidi', lambda: self.rt)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.host = midi.HostMidi('Digitakt (digiemu)', lambda d: None)
+
+    def test_no_virtual_ports_is_not_an_error(self):
+        self.assertFalse(self.host.virtual)
+        self.assertEqual(len(self.host.problems), 2)       # in and out, logged
+        self.host.send(b'\x90\x3c\x64')                    # nowhere to go yet
+
+    def test_devices_are_listed_and_chosen_without_the_index(self):
+        self.assertEqual(self.host.inputs(), ['Focusrite USB MIDI', 'Elektron Digitakt'])
+        self.host.set_output('Elektron Digitakt')
+        self.host.send(b'\x90\x3c\x64')
+        dev = next(o for o in self.rt.outs if o.opened == 'Elektron Digitakt 1')
+        self.assertEqual(dev.sent, [b'\x90\x3c\x64'])
+
+    def test_a_saved_choice_survives_the_index_moving(self):
+        self.rt.devices = ['Elektron Digitakt 0']          # the interface unplugged
+        self.host.set_input('Elektron Digitakt')
+        self.assertEqual(self.host.input, 'Elektron Digitakt')
+
+    def test_two_devices_of_one_name_are_listed_once(self):
+        self.rt.devices = ['USB MIDI 0', 'USB MIDI 1']
+        self.assertEqual(self.host.outputs(), ['USB MIDI'])
+
+    def test_where_virtual_ports_exist_they_are_reported(self):
+        from unittest import mock
+        with mock.patch.object(self.rt, 'api', _FakeRtmidi.API_LINUX_ALSA):
+            self.assertTrue(midi.HostMidi('Digitakt (digiemu)', lambda d: None).virtual)
 
 
 if __name__ == '__main__':

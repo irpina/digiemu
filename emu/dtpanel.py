@@ -531,9 +531,16 @@ class DigitaktPanel(tk.Tk):
             box.bind('<<ComboboxSelected>>',
                      lambda _e, k=key, p=pick: chosen(k, p))
             rows[key] = (box, ports, current)
-        tk.Label(win, text="Also always there: the virtual ports '%s', "
-                           'for a DAW.' % host.name,
-                 bg=BG, fg=DIM, font=('Helvetica', 9)).grid(
+        if host.virtual:
+            hint = ("Also always there: the virtual ports '%s', for a DAW."
+                    % host.name)
+        else:
+            # Windows: RtMidi's WinMM backend has no virtual ports.
+            hint = ('There are no virtual MIDI ports here (Windows has none). '
+                    'To reach a DAW, make a loopback port, with loopMIDI for '
+                    'example, press Refresh and pick it above.')
+        tk.Label(win, text=hint, bg=BG, fg=DIM, font=('Helvetica', 9),
+                 justify='left', wraplength=420).grid(
             row=2, column=0, columnspan=2, sticky='w', pady=(8, 0))
         buttons = tk.Frame(win, bg=BG)
         buttons.grid(row=3, column=0, columnspan=2, sticky='e', pady=(10, 0))

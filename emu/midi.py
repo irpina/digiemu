@@ -33,10 +33,13 @@ outrun it and keeps every note waiting.
 The firmware filters what it sends on MIDI CONFIG settings too (OUTPUT TO,
 CLOCK SEND and so on).
 
-The host side is python-rtmidi, an optional dependency (`uv sync --extra
-midi`): a virtual input port where the platform has them (Linux, macOS), or
-an existing port named by DIGIEMU_MIDI_IN (a substring of its name), and a
-virtual output port of the same name (DIGIEMU_MIDI_OUT likewise).
+The host side is python-rtmidi, an optional dependency from source (`uv sync
+--extra midi`) that the Windows app bundles: a virtual input port where the
+platform has them (Linux, macOS), or an existing port named by
+DIGIEMU_MIDI_IN (a substring of its name), and a virtual output port of the
+same name (DIGIEMU_MIDI_OUT likewise). Windows has no virtual ports (RtMidi's
+WinMM backend cannot make them), so there a DAW connects through a loopback
+port, which is chosen like any other device.
 """
 import collections
 import heapq
@@ -543,9 +546,15 @@ def _rtmidi():
     return rtmidi
 
 
-def port_name(full):
-    """A port's name without ALSA's trailing client:port numbers, which
-    change when a device is plugged in again: what a saved choice keeps."""
+def port_name(full, winmm=False):
+    """A port's name without the numbers the host's MIDI API adds to it,
+    which change when a device is plugged in again: what a saved choice
+    keeps. ALSA appends the client:port pair ('Synth 20:0'). Windows' WinMM,
+    as RtMidi lists it, appends the port's index ('Elektron Digitakt 2' as
+    an input and 'Elektron Digitakt 3' as an output on one PC), which moves
+    whenever a device comes or goes; `winmm` drops that instead."""
+    if winmm:
+        return re.sub(r' \d+$', '', full)
     return re.sub(r'\s+\d+:\d+$', '', full)
 
 
@@ -605,13 +614,26 @@ class HostMidi:
         port.set_callback(lambda event, _data: self._sink(bytes(event[0])))
         return port
 
+    @property
+    def virtual(self):
+        """True if the virtual ports opened. Windows has none: a DAW needs a
+        loopback port there."""
+        return self._vin is not None or self._vout is not None
+
+    def _names(self, port):
+        """-> the names of the ports `port` lists, as a saved choice keeps
+        them (port_name). Two devices with one name share it on WinMM; the
+        first of them is the one opened."""
+        winmm = port.get_current_api() == self._rt.API_WINDOWS_MM
+        return [port_name(p, winmm) for p in port.get_ports()]
+
     def _list(self, cls):
         probe = cls(name=self.name + ' (list)')
         try:
-            names = [port_name(p) for p in probe.get_ports()]
+            names = self._names(probe)
         finally:
             probe.delete()
-        return [n for n in names if not n.startswith(self.name)]
+        return [n for n in dict.fromkeys(names) if not n.startswith(self.name)]
 
     def inputs(self):
         """Device inputs that can be chosen, by name, not ours."""
@@ -620,10 +642,9 @@ class HostMidi:
     def outputs(self):
         return self._list(self._rt.MidiOut)
 
-    @staticmethod
-    def _index(port, name):
-        for i, full in enumerate(port.get_ports()):
-            if port_name(full) == name:
+    def _index(self, port, name):
+        for i, listed in enumerate(self._names(port)):
+            if listed == name:
                 return i
         raise OSError('MIDI port %r is not there' % name)
 
