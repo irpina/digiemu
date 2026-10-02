@@ -1298,8 +1298,13 @@ SYMBOLS = [
     # 0x3c bytes in; dsp_status (0 in progress, 1 boot failure, 2 running) is the
     # word the task clears 0x9e bytes in. Only the Digitone has this task, so
     # on every other image all three stay unresolved and nothing is modelled.
+    # Bytes 28-31 and 34-37 are the address operands of two `lea abs.l`s into
+    # the image. The first signature wildcarded 28-35, the second lea's opcode
+    # instead of its address's low half, which 1.44 moved: the task (at
+    # 0x4008d58c there) went unfound, the DSP never came up, and first boot
+    # never finished. Unique in 1.43 and 1.44, absent from the Digitakt.
     # ----------------------------------------------------------------
-    ('dsp_boot_task', Sig(H(48, '20-23,28-35,42-45', '1:ef72104f', '14585ecd817bd684aa190b0a6154acc6'),
+    ('dsp_boot_task', Sig(H(48, '20-23,28-31,34-37,42-45', '1:ef72104f', '34284baeb46da4d5a960e45c137b8ebd'),
                           hi=DATA_HI), False),
     ('dsp_request_sem', Operand('dsp_boot_task', at=0x3c), False),
     ('dsp_status', Operand('dsp_boot_task', at=0x9e), False),

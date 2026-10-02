@@ -31,6 +31,13 @@ version = "1.43"
 sha256 = "c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa"
 filename = "Digitone_OS1.43.syx"
 
+# 1.44 (2026-09-30): only the main OS changed; the DSP's sections are
+# byte-identical to 1.43's.
+[[firmware]]
+version = "1.44"
+sha256 = "d4f200d04484333d82822db7744e6484d0def8f2db8ddf55ee2b780cc13c9659"
+filename = "Digitone_OS1.44.syx"
+
 [card]
 # No sample engine, so no ekFS sample volume on the +Drive: the card starts
 # blank and the firmware's first boot lays down its projects and sounds.

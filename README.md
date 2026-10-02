@@ -17,7 +17,8 @@ not affiliated with or endorsed by Elektron.
    [Releases](https://github.com/irpina/digiemu/releases) and unzip it
    anywhere you can write to, except a OneDrive folder.
 2. Get the firmware from Elektron's website: `Digitakt_OS1.53.syx` for the
-   Digitakt, or `Digitone_and_Digitone_Keys_OS1.43.syx` for the Digitone.
+   Digitakt, or `Digitone_and_Digitone_Keys_OS1.44.syx` (or 1.43) for the
+   Digitone.
 3. Run `digiemu.exe`, click **Add firmware** and pick the `.syx`.
 4. When it says the firmware is ready, click **Play**.
 
@@ -138,7 +139,9 @@ what no emulator run can tell you.
 digiemu is tested with **Digitakt mk1 OS 1.53** (SHA-256
 `9bdd44bb6102fb25c143cfab97bc92b7a89c463f795d3112dce89771e29bcc92`) and
 **Digitone mk1 OS 1.43** (SHA-256
-`c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`). Other
+`c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`) and
+**1.44** (SHA-256
+`d4f200d04484333d82822db7744e6484d0def8f2db8ddf55ee2b780cc13c9659`). Other
 releases of the two are offered as untested and run once you confirm. Other
 Elektron products are recognised and turned away for now.
 

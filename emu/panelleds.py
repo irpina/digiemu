@@ -51,8 +51,19 @@ SEED = {
                  palette=0x4020D900),     # 41 x u32 0x00RRGGBB, last palette sent
     ('Digitone', '1.43'): dict(slot_cache=0x43229D43, selectors=0x419CE71C,
                                palette=0x40241A4C, leds=72, groups=18),
+    # 1.44: the same code reads them 0x1000 (cache, selectors) and 0x400
+    # (palette) higher; every operand site found in 1.43 agrees.
+    ('Digitone', '1.44'): dict(slot_cache=0x4322AD43, selectors=0x419CF71C,
+                               palette=0x40241E4C, leds=72, groups=18),
 }
 PALETTE = 41
+
+# Each product's panel, for a release with no SEED entry: its LEDs still
+# light as the firmware sends them, decoded at the right size.
+GEOMETRY = {
+    'Digitakt': dict(leds=LEDS, groups=GROUPS),
+    'Digitone': dict(leds=72, groups=18),
+}
 
 
 def seed_table(version, product=None):
@@ -138,7 +149,7 @@ class LedState:
 
 def new_state(version, product=None):
     """-> an empty LedState sized for this product's panel."""
-    where = seed_table(version, product) or {}
+    where = seed_table(version, product) or GEOMETRY.get(product) or {}
     return LedState(where.get('leds', LEDS), where.get('groups', GROUPS))
 
 

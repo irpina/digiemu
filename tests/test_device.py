@@ -272,10 +272,15 @@ class ShippedDeviceFilesTest(unittest.TestCase):
             codes = dev.button_codes()
             self.assertEqual(len(codes), len(set(codes)), dev.name)
 
-    def test_each_has_exactly_one_known_firmware_hash(self):
+    def test_each_has_known_firmware_hashes(self):
+        # One or more tested releases (the Digitone has 1.43 and 1.44), each
+        # a full SHA-256, none listed twice.
         for dev in self.devices:
-            self.assertEqual(len(dev.firmwares), 1, dev.name)
-            self.assertEqual(len(dev.firmwares[0].sha256), 64, dev.name)
+            self.assertGreaterEqual(len(dev.firmwares), 1, dev.name)
+            hashes = [fw.sha256 for fw in dev.firmwares]
+            for h in hashes:
+                self.assertEqual(len(h), 64, dev.name)
+            self.assertEqual(len(hashes), len(set(hashes)), dev.name)
 
 
 if __name__ == '__main__':

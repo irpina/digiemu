@@ -142,6 +142,14 @@ class DigitoneSeed(unittest.TestCase):
         dt.feed(bytes([0x2F, 0x01]))                   # past its 11 groups
         self.assertEqual(dt.sel, [None] * 11)
 
+    def test_a_release_without_a_seed_keeps_the_products_size(self):
+        # A Digitone release newer than the table: no seed, but its LEDs are
+        # still decoded as 72 in 18 groups, not as the Digitakt's 44.
+        self.assertIsNone(panelleds.seed(self.ram(), '9.99', 'Digitone'))
+        st = panelleds.new_state('9.99', 'Digitone')
+        self.assertEqual((st.leds, st.groups), (72, 18))
+        self.assertEqual(panelleds.SEED[('Digitone', '1.44')]['leds'], 72)
+
 
 class DeviceFile(unittest.TestCase):
     def test_digitakt_led_map(self):

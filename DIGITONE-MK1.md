@@ -8,9 +8,26 @@ encoder and key LED, and the voices are rendered by the firmware's own code
 live at 48 kHz.
 
 Tested with `Digitone_and_Digitone_Keys_OS1.43.syx`, SHA-256
-`c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`. One OS
+`c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`, and
+`Digitone_and_Digitone_Keys_OS1.44.syx`, SHA-256
+`d4f200d04484333d82822db7744e6484d0def8f2db8ddf55ee2b780cc13c9659`. One OS
 file serves the Digitone and the Digitone Keys. digiemu runs it as a plain
 Digitone.
+
+1.44 changed only the main OS; the DSP's sections are byte-identical to
+1.43's. Two things that 1.43's addresses had pinned were found again for
+it:
+- **The DSP boot task's signature.** It wildcarded the wrong half of one
+  `lea abs.l` address, so on 1.44 the task went unfound, the DSP never came
+  up, and first boot never finished. Setup failed at settle: "not settled
+  after 3000M instructions".
+- **The key LEDs' shadow copies** (emu/panelleds.py), 0x1000 and 0x400
+  higher. A Digitone release without them now still decodes its 72 LEDs as
+  the firmware sends them.
+
+On the reference desktop, 1.44 sets up in about 38 seconds, settling at
+1400M instructions. Its factory pattern plays at 100% of real time, with
+the same level as 1.43's (RMS about 1.8k).
 
 ## Running it
 
