@@ -1,9 +1,12 @@
-# The Windows app's build tools, for the release workflow's build venv
-# (.github/workflows/release.yml, tools/build-windows.ps1). Pinned to the
-# versions the v0.1.0 zip was built with.
+# The apps' build tools, for the release workflow's build venvs
+# (.github/workflows/release.yml, tools/build-windows.ps1 and
+# tools/build-macos.sh). Pinned: the Windows ones to the versions the v0.1.0
+# zip was built with. macholib is what PyInstaller uses on macOS in place of
+# pefile.
 pyinstaller==6.19.0
 pyinstaller-hooks-contrib==2026.4
 altgraph==0.17.5
 packaging==26.0
-pefile==2024.8.26
-pywin32-ctypes==0.2.3
+pefile==2024.8.26; sys_platform == "win32"
+pywin32-ctypes==0.2.3; sys_platform == "win32"
+macholib==1.16.4; sys_platform == "darwin"

@@ -1,5 +1,5 @@
 # pyright: reportMissingImports=false
-"""The Windows bundle: what may ship, how it is specified, how it starts.
+"""The app bundles: what may ship, how they are specified, how they start.
 
 The portable app keeps the user's firmware next to the exe, so the one thing
 packaging must never do is zip any of it. packaging/bundle_guard.py is the
@@ -15,6 +15,11 @@ The exes must also be able to run the emulator: Control Flow Guard off (a
 synthetic PE header stands in for PyInstaller's bootloader) and every module
 the app imports inside functions in the bundle (the source is scanned for
 them, and the self-test's imports check is run against a stub importer).
+
+The macOS app (digiemu.app) gets the same treatment: bundle_guard.audit_app()
+on synthetic app trees (arm64 Mach-O headers stand in for the binaries), and
+packaging/digiemu-macos.spec run with stand-ins for Analysis/EXE/COLLECT/
+BUNDLE.
 
 No firmware, no emulator, no PyInstaller. packaging/ has no __init__.py
 (and PyPI's `packaging` would shadow it anyway), so its modules are loaded
@@ -40,6 +45,7 @@ from unittest import mock
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGING = os.path.join(REPO, 'packaging')
 SPEC = os.path.join(PACKAGING, 'digiemu.spec')
+MAC_SPEC = os.path.join(PACKAGING, 'digiemu-macos.spec')
 
 
 def _load(name, filename):
@@ -632,9 +638,18 @@ class EntryTest(unittest.TestCase):
             self.assertEqual(entry.app_root(), os.path.join(REPO, 'portable'))
         exe = os.path.join(os.path.abspath(os.sep), 'Apps', 'digi kit', 'digiemu.exe')
         with mock.patch.object(sys, 'frozen', True, create=True), \
+                mock.patch.object(sys, 'platform', 'win32'), \
                 mock.patch.object(sys, 'executable', exe), \
                 mock.patch.dict(os.environ, {'DIGIEMU_HOME': 'ignored'}):
             self.assertEqual(entry.app_root(), os.path.dirname(exe))
+        # The macOS app: never inside the signed bundle.
+        app = os.path.join(os.path.abspath(os.sep), 'Applications', 'digiemu.app')
+        with mock.patch.object(sys, 'frozen', True, create=True), \
+                mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(sys, 'executable', os.path.join(app, 'Contents', 'MacOS', 'digiemu')), \
+                mock.patch.dict(os.environ, {'DIGIEMU_HOME': 'ignored', 'HOME': os.path.join('x', 'me')}):
+            self.assertEqual(entry.app_root(), os.path.join('x', 'me', 'Library', 'Application Support',
+                                                            'digiemu'))
 
     def test_windowed_stdio_goes_to_the_log_in_utf8(self):
         with tempfile.TemporaryDirectory() as home:
@@ -653,6 +668,32 @@ class EntryTest(unittest.TestCase):
         self.assertIn('t\u00ebst \u65e5\n', log)
         self.assertIn('to stderr\n', log)
         self.assertTrue(log.startswith('---- '))
+
+    def test_macos_app_stdio_on_devnull_goes_to_the_log(self):
+        # Opened from the Finder, the macOS app's stdout and stderr are
+        # /dev/null. From source (not frozen) they are left alone.
+        code = ('import importlib.util, sys; sys.platform = "darwin"; %s'
+                's = importlib.util.spec_from_file_location("m", %r); '
+                'm = importlib.util.module_from_spec(s); s.loader.exec_module(m); '
+                'm.setup_stdio(); print("to the log"); print("err too", file=sys.stderr)')
+        for frozen in (True, False):
+            with self.subTest(frozen=frozen), tempfile.TemporaryDirectory() as home:
+                env = dict(os.environ, HOME=home, DIGIEMU_HOME=os.path.join(home, 'dev'))
+                out = subprocess.run(
+                    [sys.executable, '-c', code % ('sys.frozen = True; ' if frozen else '',
+                                                   os.path.join(PACKAGING, 'digiemu_main.py'))],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, cwd=REPO,
+                    timeout=60)
+                self.assertEqual(out.returncode, 0)
+                logs = [os.path.join(home, 'Library', 'Application Support', 'digiemu', 'logs'),
+                        os.path.join(home, 'dev', 'logs')]
+                if frozen:
+                    with open(os.path.join(logs[0], 'launcher.log'), encoding='utf-8') as fh:
+                        log = fh.read()
+                    self.assertIn('to the log\n', log)
+                    self.assertIn('err too\n', log)
+                else:
+                    self.assertFalse(any(os.path.exists(d) for d in logs))
 
     CHECKS = ('_check_unicorn', '_check_compat', '_check_native', '_check_capstone',
               '_check_devices', '_check_tk', '_check_imports')
@@ -911,6 +952,319 @@ class LazyImportTest(unittest.TestCase):
         self.assertIsNone(importlib.util.find_spec('fcntl'))
 
 
+# -- the macOS app --------------------------------------------------------------------
+
+CPU_ARM64, CPU_X86_64 = 0x0100000c, 0x01000007
+UUID = bytes(range(0x10, 0x20))
+
+
+def _macho(cputype=CPU_ARM64, uuid=UUID, filetype=6, tail=b''):
+    """-> a minimal thin 64-bit Mach-O image: the header, an LC_SEGMENT_64
+    stand-in, then LC_UUID (unless uuid is None), then `tail`."""
+    cmds = struct.pack('<II', 0x19, 72) + bytes(64)
+    ncmds = 1
+    if uuid is not None:
+        cmds += struct.pack('<II', 0x1b, 24) + uuid
+        ncmds += 1
+    head = struct.pack('<IIIIIIII', 0xfeedfacf, cputype, 0, filetype, ncmds, len(cmds), 0, 0)
+    return head + cmds + tail
+
+
+def _clean_app(root):
+    """A minimal digiemu.app that passes every rule, with the links
+    PyInstaller makes between Resources and Frameworks."""
+    app = os.path.join(root, 'digiemu.app')
+    _put(app, 'Contents/Info.plist', b'<plist/>')
+    _put(app, 'Contents/MacOS/digiemu', _macho(filetype=2, uuid=None, tail=ARCHIVE))
+    _put(app, 'Contents/Frameworks/unicorn/lib/libunicorn.2.dylib', _macho())
+    _put(app, 'Contents/Frameworks/capstone/lib/libcapstone.dylib', _macho(uuid=bytes(16)))
+    _put(app, 'Contents/Resources/devices/digitakt.toml', b'[device]\nname = "Digitakt"\n')
+    _put(app, 'Contents/Resources/LICENSE', b'GPL')
+    os.symlink(os.path.join('..', 'Resources', 'devices'),
+               os.path.join(app, 'Contents', 'Frameworks', 'devices'))
+    os.symlink(os.path.join('..', 'Frameworks', 'unicorn'),
+               os.path.join(app, 'Contents', 'Resources', 'unicorn'))
+    os.symlink(os.path.join('..', 'Resources', 'LICENSE'),
+               os.path.join(app, 'Contents', 'Frameworks', 'LICENSE'))
+    return app
+
+
+@unittest.skipIf(os.name == 'nt', 'the app tree has symlinks')
+class AppBundleGuardTest(unittest.TestCase):
+    ARCHIVE_NAMES = list(guard.REQUIRED_MODULES) + ['pyimod02_importers']
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.app = _clean_app(self.tmp)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def audit(self, **kw):
+        kw.setdefault('unicorn_uuid', UUID.hex())
+        return guard.audit_app(self.app, **kw)
+
+    def lister(self, names, seen=None):
+        def fn(exe):
+            if seen is not None:
+                seen.append(os.path.relpath(exe, self.app))
+            return names
+        return fn
+
+    def test_clean_app_passes(self):
+        seen = []
+        files, problems = self.audit(lister=self.lister(self.ARCHIVE_NAMES, seen))
+        self.assertEqual(problems, [])
+        self.assertEqual(seen, [os.path.join('Contents', 'MacOS', 'digiemu')])
+        self.assertIn(guard.APP_UNICORN, files)
+        self.assertIn(guard.APP_EXE, files)
+        # Links are not files of their own: their targets are audited.
+        self.assertNotIn('Contents/Frameworks/LICENSE', files)
+        self.assertIn('Contents/Resources/LICENSE', files)
+
+    def test_firmware_in_the_app_is_refused(self):
+        for rel, data in (('Contents/Resources/Digitakt_OS1.53.syx', b'x'),
+                          ('Contents/Resources/snapshots/a.bin', b'x'),
+                          ('Contents/Frameworks/plusdrive.img', b'x'),
+                          ('Contents/Resources/notes.txt', b'\xf0\x00\x20\x3c rest')):
+            with self.subTest(rel=rel):
+                path = _put(self.app, rel, data)
+                self.assertTrue(self.audit()[1])
+                os.remove(path)
+        self.assertEqual(self.audit()[1], [])
+
+    def test_a_link_out_of_the_app_is_refused(self):
+        for name, target in (('escape', os.path.join('..', '..', '..')),
+                             ('abs', os.path.abspath(os.sep))):
+            with self.subTest(name=name):
+                link = os.path.join(self.app, 'Contents', 'Resources', name)
+                os.symlink(target, link)
+                files, problems = self.audit()
+                self.assertEqual(files, [])
+                self.assertEqual(problems, ['Contents/Resources/%s: link out of the app' % name])
+                os.remove(link)
+
+    def test_the_layout_is_checked(self):
+        _put(self.app, 'stray.txt')
+        _put(self.app, 'Contents/MacOS/digiemu-console')
+        problems = self.audit()[1]
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn('the app must hold only Contents', problems[0])
+        self.assertIn('Contents/MacOS: must hold only digiemu', problems[1])
+
+    def test_the_executable_must_be_arm64_mach_o(self):
+        exe = os.path.join(self.app, *guard.APP_EXE.split('/'))
+        for data, why in ((_macho(CPU_X86_64, filetype=2), 'not arm64'),
+                          (b'#!/bin/sh\n', 'not a thin 64-bit Mach-O')):
+            with self.subTest(why=why):
+                with open(exe, 'wb') as fh:
+                    fh.write(data)
+                problems = self.audit()[1]
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(why, problems[0])
+
+    def test_unicorn_is_identified_by_its_build_uuid(self):
+        self.assertEqual(self.audit(unicorn_uuid=UUID.hex().upper())[1], [])
+        problems = self.audit(unicorn_uuid='ab' * 16)[1]
+        self.assertEqual(problems, ['%s: LC_UUID %s, expected the patched build %s'
+                                    % (guard.APP_UNICORN, UUID.hex(), 'ab' * 16)])
+        _put(self.app, guard.APP_UNICORN, _macho(uuid=None))
+        self.assertIn('unreadable (no LC_UUID)', self.audit()[1][0])
+
+    def test_one_unicorn_in_the_one_place_and_capstone(self):
+        _put(self.app, 'Contents/Resources/libunicorn.2.dylib', _macho())
+        self.assertIn('expected exactly', self.audit()[1][0])
+        os.remove(os.path.join(self.app, 'Contents', 'Resources', 'libunicorn.2.dylib'))
+        _put(self.app, 'Contents/Frameworks/unicorn/lib/libunicorn.a', b'!<arch>')
+        self.assertIn('build litter', self.audit()[1][0])
+        os.remove(os.path.join(self.app, 'Contents', 'Frameworks', 'unicorn', 'lib', 'libunicorn.a'))
+        os.remove(os.path.join(self.app, *guard.APP_CAPSTONE.split('/')))
+        self.assertEqual(self.audit()[1], ['%s: missing' % guard.APP_CAPSTONE])
+
+    def test_the_archive_is_checked_like_the_windows_exes(self):
+        self.assertTrue(self.audit(lister=self.lister(self.ARCHIVE_NAMES + ['machinepatch']))[1])
+        names = [n for n in self.ARCHIVE_NAMES if n != 'emu.portable']
+        self.assertEqual(self.audit(lister=self.lister(names))[1],
+                         ['%s: the archive lacks modules the app imports at run time: emu.portable'
+                          % guard.APP_EXE])
+        self.assertTrue(self.audit(require_pyz=True)[1])
+
+    def test_cli(self):
+        source = _put(self.tmp, 'venv/libunicorn.2.dylib', _macho())
+        with mock.patch.object(guard, 'pyinstaller_lister', lambda: self.lister(self.ARCHIVE_NAMES)), \
+                mock.patch('sys.stdout', io.StringIO()) as out:
+            self.assertEqual(guard.main([self.app, '--unicorn-source', source]), 0)
+        self.assertIn('bundle audit OK', out.getvalue())
+        _put(self.tmp, 'venv/libunicorn.2.dylib', _macho(uuid=bytes(16)))
+        with mock.patch.object(guard, 'pyinstaller_lister', lambda: None), \
+                mock.patch('sys.stdout', io.StringIO()) as out:
+            self.assertEqual(guard.main([self.app, '--unicorn-source', source]), 1)
+        self.assertIn('LC_UUID', out.getvalue())
+        # A .app is never zipped: it ships in a .dmg.
+        with mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            guard.main([self.app, '--zip', os.path.join(self.tmp, 'x.zip')])
+
+
+class MachoTest(unittest.TestCase):
+    def test_uuid(self):
+        self.assertEqual(guard.macho_uuid(_macho()), UUID.hex())
+        self.assertEqual(guard.macho_header(_macho(CPU_X86_64))[0], CPU_X86_64)
+
+    def test_not_a_usable_image(self):
+        for data, why in ((b'MZ' + bytes(64), 'not a thin 64-bit Mach-O'),
+                          (_macho(uuid=None), 'no LC_UUID'),
+                          (_macho()[:40], 'run past the end'),
+                          (_macho()[:32] + struct.pack('<II', 0x19, 4) + _macho()[40:],
+                           'bad Mach-O load command')):
+            with self.subTest(why=why), self.assertRaises(ValueError) as cm:
+                guard.macho_uuid(data)
+            self.assertIn(why, str(cm.exception))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'needs a real Mach-O binary and dwarfdump')
+    def test_matches_dwarfdump_on_a_real_binary(self):
+        exe = os.path.realpath(sys.executable)
+        with open(exe, 'rb') as fh:
+            data = fh.read()
+        if struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+            self.skipTest('%s is not a thin 64-bit Mach-O' % exe)
+        out = subprocess.run(['dwarfdump', '--uuid', exe], capture_output=True, text=True)
+        if out.returncode != 0:
+            self.skipTest('no dwarfdump')
+        want = out.stdout.split()[1].replace('-', '').lower()
+        self.assertEqual(guard.macho_uuid(data), want)
+
+
+class MacSpecTest(unittest.TestCase):
+    """Runs packaging/digiemu-macos.spec with stand-ins for PyInstaller's classes."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.dylib = _put(self.tmp, 'venv/unicorn/lib/libunicorn.2.dylib', UC_BYTES)
+        self.env = {'DIGIEMU_UC_DLL': self.dylib, 'DIGIEMU_UC_SHA256': _sha(UC_BYTES),
+                    'DIGIEMU_VERSION': '1.2.3', 'DIGIEMU_CODESIGN_IDENTITY': ''}
+        self.extra_datas, self.extra_pure = [], []
+        self.capstone = [('capstone/lib/libcapstone.dylib', '/venv/libcapstone.dylib', 'BINARY')]
+        self.pure = [(m, '/r/%s.py' % m.replace('.', '/'), 'PYMODULE')
+                     for m in guard.REQUIRED_MODULES]
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_spec(self):
+        test = self
+        made = {}
+
+        class Analysis(_Recorder):
+            def __init__(self, scripts, **kw):
+                super().__init__(scripts, **kw)
+                made['analysis'] = self
+                import glob
+                self.binaries = [(os.path.join(dest, os.path.basename(src)), src, 'BINARY')
+                                 for src, dest in kw['binaries']] + test.capstone
+                self.datas = [(os.path.join(dest, os.path.basename(f)), f, 'DATA')
+                              for src, dest in kw['datas'] for f in glob.glob(src)]
+                self.datas += test.extra_datas
+                self.pure = test.pure + test.extra_pure
+                self.scripts = [('digiemu_main', scripts[0], 'PYSOURCE')]
+
+        def recorder(key):
+            class R(_Recorder):
+                def __init__(self, *a, **kw):
+                    super().__init__(*a, **kw)
+                    made[key] = self
+            return R
+
+        ns = {'SPEC': MAC_SPEC, 'SPECPATH': PACKAGING, 'workpath': os.path.join(self.tmp, 'work'),
+              'DISTPATH': os.path.join(self.tmp, 'dist'), 'specnm': 'digiemu-macos',
+              'Analysis': Analysis, 'PYZ': _Recorder, 'EXE': recorder('exe'),
+              'COLLECT': recorder('collect'), 'BUNDLE': recorder('bundle'), 'os': os}
+        with open(MAC_SPEC, 'rb') as fh:
+            code = compile(fh.read(), MAC_SPEC, 'exec')
+        with mock.patch.dict(os.environ, self.env):
+            exec(code, ns)
+        return made
+
+    def test_analysis_inputs_are_the_windows_specs(self):
+        kw = self.run_spec()['analysis'].kwargs
+        self.assertEqual(kw['pathex'], [os.path.abspath(REPO)])
+        self.assertEqual(kw['binaries'], [(self.dylib, os.path.join('unicorn', 'lib'))])
+        self.assertEqual(kw['runtime_hooks'], [os.path.join(PACKAGING, 'rth_digiemu.py')])
+        self.assertEqual(kw['hiddenimports'], list(guard.REQUIRED_MODULES))
+        for m in guard.PRIVATE_MODULES:
+            self.assertIn(m, kw['excludes'])
+        dests = {os.path.normpath(d) for _s, d in kw['datas']}
+        for d in ('devices', '.', 'patches', os.path.join('licenses', 'capstone'),
+                  os.path.join('licenses', 'python-rtmidi'), os.path.join('licenses', 'python')):
+            self.assertIn(os.path.normpath(d), dests)
+
+    def test_one_windowed_arm64_executable_signed_with_allow_jit(self):
+        made = self.run_spec()
+        exe = made['exe'].kwargs
+        self.assertEqual(exe['name'], 'digiemu')
+        self.assertFalse(exe['console'])
+        self.assertFalse(exe['argv_emulation'])
+        self.assertEqual(exe['target_arch'], 'arm64')
+        self.assertIsNone(exe['codesign_identity'])                  # ad hoc
+        self.assertEqual(exe['entitlements_file'], os.path.join(PACKAGING, 'digiemu.entitlements'))
+        self.assertIn(('X utf8', None, 'OPTION'), made['exe'].args[2])
+        self.assertIs(made['collect'].args[0], made['exe'])
+        self.env['DIGIEMU_CODESIGN_IDENTITY'] = 'Developer ID Application: Someone (TEAM)'
+        self.assertEqual(self.run_spec()['exe'].kwargs['codesign_identity'],
+                         'Developer ID Application: Someone (TEAM)')
+
+    def test_the_bundle(self):
+        made = self.run_spec()
+        b = made['bundle']
+        self.assertIs(b.args[0], made['collect'])
+        self.assertEqual(b.kwargs['name'], 'digiemu.app')
+        self.assertEqual(b.kwargs['bundle_identifier'], 'io.github.irpina.digiemu')
+        self.assertEqual(b.kwargs['version'], '1.2.3')
+        self.assertEqual(b.kwargs['info_plist']['CFBundleVersion'], '1.2.3')
+        self.assertEqual(b.kwargs['info_plist']['LSMinimumSystemVersion'], '11.0')
+
+    def test_build_info_pins_the_source_dylib_not_the_bundled_bytes(self):
+        self.run_spec()
+        with open(os.path.join(self.tmp, 'work', 'digiemu-build.json'), encoding='utf-8') as fh:
+            info = json.load(fh)
+        self.assertEqual(info['unicorn_source_sha256'], _sha(UC_BYTES))
+        # 'unicorn_sha256' would make the self-test compare the bundled
+        # bytes, which PyInstaller rewrites and signs on macOS.
+        self.assertNotIn('unicorn_sha256', info)
+
+    def test_what_stops_the_build(self):
+        cases = {
+            'no pin': ({'DIGIEMU_UC_SHA256': ''}, None, 'set DIGIEMU_UC_SHA256'),
+            'wrong dylib': ({'DIGIEMU_UC_SHA256': '0' * 64}, None, 'refusing to bundle'),
+            'bad version': ({'DIGIEMU_VERSION': '1.2'}, None, 'x.y.z'),
+            'firmware': ({}, ('extra_datas', [('snapshots/a/gui.snap', '/x/gui.snap', 'DATA')]),
+                         'firmware-derived'),
+            'private': ({}, ('extra_pure', [('dt2.build', '/r/dt2/build.py', 'PYMODULE')]),
+                        'private modules'),
+            'no capstone': ({}, ('capstone', []), 'libcapstone.dylib was not collected'),
+            'missing module': ({}, ('pure', [e for e in self.pure if e[0] != 'emu.uiresume']),
+                               'lacks modules the app imports at run time: emu.uiresume'),
+        }
+        for name, (env, attr, why) in cases.items():
+            with self.subTest(name), mock.patch.dict(self.env, env):
+                saved = getattr(self, attr[0]) if attr else None
+                if attr:
+                    setattr(self, attr[0], attr[1])
+                try:
+                    with self.assertRaises(SystemExit) as cm:
+                        self.run_spec()
+                    self.assertIn(why, str(cm.exception))
+                finally:
+                    if attr:
+                        setattr(self, attr[0], saved)
+
+    def test_entitlements_ask_for_allow_jit_and_nothing_else(self):
+        import plistlib
+        with open(os.path.join(PACKAGING, 'digiemu.entitlements'), 'rb') as fh:
+            self.assertEqual(plistlib.load(fh), {'com.apple.security.cs.allow-jit': True})
+
+
 class RuntimeHookTest(unittest.TestCase):
     HOOK = os.path.join(PACKAGING, 'rth_digiemu.py')
 
@@ -948,8 +1302,10 @@ class RepoFilesTest(unittest.TestCase):
             with self.subTest(rel=rel):
                 self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', rel],
                                                 cwd=REPO).returncode, 0)
-        self.assertNotEqual(subprocess.run(['git', 'check-ignore', '-q', 'packaging/digiemu.spec'],
-                                           cwd=REPO).returncode, 0)
+        for tracked in ('packaging/digiemu.spec', 'packaging/digiemu-macos.spec',
+                        'packaging/digiemu.entitlements'):
+            self.assertNotEqual(subprocess.run(['git', 'check-ignore', '-q', tracked],
+                                               cwd=REPO).returncode, 0)
 
     def test_build_script_checks_control_flow_guard_before_the_self_test(self):
         with open(os.path.join(REPO, 'tools', 'build-windows.ps1'), encoding='ascii') as fh:
@@ -959,6 +1315,20 @@ class RepoFilesTest(unittest.TestCase):
         self.assertLess(pe, text.index("Step 'self-test (frozen)'"))
         self.assertIn('generate_checksum()', text)
         self.assertIn('GUARD_CF', text[:pe])        # the spec's log lines are shown
+
+    def test_macos_build_script_order(self):
+        # Signed and checked before the self-test, the self-test before the
+        # audit, the audit before the .dmg, and the app notarized (so its
+        # ticket can be stapled) before it goes into the .dmg.
+        with open(os.path.join(REPO, 'tools', 'build-macos.sh'), encoding='ascii') as fh:
+            text = fh.read()
+        order = ['# -- 2. PyInstaller', "step 'signature'", "step 'self-test (frozen, signed)'",
+                 "step 'audit'", "step 'notarize the app'", "step 'the .dmg'",
+                 'audit "$mnt/digiemu.app"', "step 'notarize the .dmg'"]
+        at = [text.index(s) for s in order]
+        self.assertEqual(at, sorted(at))
+        self.assertIn('com.apple.security.cs.allow-jit', text)
+        self.assertIn('HOME=$out/selftest-home', text)
 
     def test_build_script_is_ascii(self):
         # Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page.

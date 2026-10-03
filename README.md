@@ -33,6 +33,20 @@ side by side.
 The exe is not code-signed, so Windows shows a SmartScreen prompt the first
 time, and a PC with Smart App Control turned on blocks it.
 
+## Quick start (macOS)
+
+1. Download `digiemu-macos-arm64-<version>.dmg` from
+   [Releases](https://github.com/irpina/digiemu/releases), open it, and drag
+   **digiemu** to **Applications**. It runs on Macs with Apple silicon (M1
+   or later), and it is signed and notarized by Apple.
+2. Get the firmware from Elektron's website, as above.
+3. Open digiemu, click **Add firmware** and pick the `.syx`.
+4. When it says the firmware is ready, click **Play**.
+
+Everything else works as on Windows. The app keeps your firmware folders,
+sessions and logs in `~/Library/Application Support/digiemu`, since nothing
+may be written inside the app itself.
+
 ## Using the panel
 
 - **Keys:** click to press. **Shift-click latches** a key, for combinations
@@ -50,7 +64,7 @@ time, and a PC with Smart App Control turned on blocks it.
   a loopback port (made with loopMIDI, for example) picked like a device.
   The firmware's own MIDI CONFIG still applies: after setup, PORT CONFIG >
   INPUT FROM is USB only, so set it to MIDI (and OUTPUT TO, for MIDI out).
-  The Windows app includes MIDI; from source it needs `uv sync --extra midi`.
+  The Windows and macOS apps include MIDI; from source it needs `uv sync --extra midi`.
 - **LOAD SAMPLES** (Digitakt only): see below.
 
 Both windows share one plan: Master Volume and LEVEL/DATA at the top
@@ -80,8 +94,9 @@ restarts.
 
 Everything lives next to the exe, in `firmware\<name>\`: your `.syx`, the
 +Drive image (`plusdrive.img`), the snapshots and the logs. You can move or
-copy the whole digiemu folder. **Do not share anything inside `firmware\`:**
-it is derived from Elektron's firmware.
+copy the whole digiemu folder. On the Mac the same folders are in
+`~/Library/Application Support/digiemu/`. **Do not share anything inside
+`firmware`:** it is derived from Elektron's firmware.
 
 - **Rebuild** starts the firmware again from its +Drive as it is now. Your
   projects and samples stay; the saved session does not.
@@ -102,7 +117,8 @@ digiemu-console.exe --check FILE.syx         check a build before you flash it (
     [--baseline STOCK.syx] [--timing]        compare with this stock build; also time the audio
 ```
 
-`--home DIR` uses another data folder. Setting up takes about 23 seconds on
+On the Mac the same program is `/Applications/digiemu.app/Contents/MacOS/digiemu`,
+with the same options. `--home DIR` uses another data folder. Setting up takes about 23 seconds on
 the reference desktop, or about 13 seconds on a +Drive that already holds
 the factory content.
 
@@ -112,7 +128,7 @@ In the app, **Check firmware...** takes the build's .syx and compares it
 with the stock firmware you have set up here (or another stock .syx you
 pick). A check takes a few minutes, runs in the background, and ends with
 PASS or FAIL and the reasons. Its report stays in `checks/` next to
-`digiemu.exe`.
+`digiemu.exe` (on the Mac, in `~/Library/Application Support/digiemu/`).
 
 From source, `emu.fwcheck` does the same from the command line:
 
@@ -201,6 +217,27 @@ under it; the process then has the same protections as `python.exe`), and
 runs a self-test of both exes before it writes the zip. The script's header
 and [packaging/](packaging/) explain each step.
 
+### Building the macOS app
+
+```bash
+python3.12 -m venv ../venv-mac
+../venv-mac/bin/pip install -r requirements.txt -r requirements-build.txt
+PYTHON=../venv-mac/bin/python tools/install-patched-unicorn.sh
+tools/build-macos.sh --python ../venv-mac/bin/python --out ../build-out-mac \
+    [--identity "Developer ID Application: ..." [--notarize]]
+```
+
+It builds `digiemu.app` for Apple silicon with
+`packaging/digiemu-macos.spec`, signs it (ad hoc without `--identity`, which
+is for trying it on that Mac only), runs the self-test on the signed app,
+audits it, and makes `digiemu-macos-arm64-<version>.dmg`, auditing the app
+again from inside the `.dmg`. It is signed with the hardened runtime and one
+entitlement, `com.apple.security.cs.allow-jit`: Unicorn translates the
+firmware's code as it runs, and without it cannot allocate the buffer for
+that code. `--notarize` has Apple notarize the app and the `.dmg`, with an App
+Store Connect API key in `NOTARY_KEY`, `NOTARY_KEY_ID` and `NOTARY_ISSUER`.
+The script's header explains each step.
+
 ### Releasing
 
 Releases are built by GitHub Actions
@@ -213,12 +250,22 @@ Releases are built by GitHub Actions
 3. On a Windows runner, the workflow checks that the tag matches
    `APP_VERSION`, builds the patched Unicorn from source, and runs
    `tools/build-windows.ps1` with the build tools pinned in
-   `requirements-build.txt`. It then attaches the zip and `SHA256SUMS.txt`
-   to a **draft** release for the tag.
+   `requirements-build.txt`. On a macOS runner it does the same with
+   `tools/build-macos.sh`, which signs and notarizes the app. It then
+   attaches the zip, the `.dmg` and `SHA256SUMS.txt` to a **draft** release
+   for the tag.
 4. Review the draft and publish it.
 
-A pull request that changes the build runs the same build without
-releasing anything, and keeps the zip as a workflow artifact.
+Signing the macOS app needs five repository secrets: `MACOS_CERTIFICATE`
+(the Developer ID Application certificate with its private key, exported as
+a `.p12`, base64-encoded), `MACOS_CERTIFICATE_PASSWORD`, and an App Store
+Connect API key for notarizing: `NOTARY_KEY` (the `.p8` file's text),
+`NOTARY_KEY_ID` and `NOTARY_ISSUER`.
+
+A pull request that changes the build runs the same builds without
+releasing anything, and keeps the zip and the `.dmg` as workflow artifacts.
+A pull request from a fork has no secrets, so its app is signed ad hoc and
+not notarized.
 
 ### Tests
 

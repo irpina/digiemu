@@ -1,13 +1,14 @@
-"""Print the version a Windows build is made as, and check a release tag.
+"""Print the version the app builds are made as, and check a release tag.
 
     python tools/ci/release_version.py [--tag vX.Y.Z]
 
 The version is emu/portable.py's APP_VERSION: the app shows it in the
 launcher's title and stamps it into every firmware folder it sets up, so a
 zip built as anything else would call itself one version and be named
-another. With --tag (the release workflow passes the pushed tag), the tag
-must be exactly 'v' + APP_VERSION; bump APP_VERSION in a pull request first,
-then tag the merge. Exit 0 prints the version; exit 1 says what is wrong.
+another (the Windows zip and the macOS .dmg alike). With --tag (the release
+workflow passes the pushed tag), the tag must be exactly 'v' + APP_VERSION;
+bump APP_VERSION in a pull request first, then tag the merge. Exit 0 prints
+the version; exit 1 says what is wrong.
 """
 import argparse
 import os

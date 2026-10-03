@@ -323,6 +323,7 @@ class LayoutTest(Base):
         meipass = os.path.join(self.tmp, 'dist', '_internal')
         os.environ['DIGIEMU_HOME'] = self.home     # ignored when frozen
         with mock.patch.object(sys, 'frozen', True, create=True), \
+                mock.patch.object(sys, 'platform', 'win32'), \
                 mock.patch.object(sys, '_MEIPASS', meipass, create=True), \
                 mock.patch.object(sys, 'executable', exe):
             self.assertEqual(portable.app_root(), os.path.dirname(exe))
@@ -330,6 +331,24 @@ class LayoutTest(Base):
             self.assertEqual(portable.devices_dir(), os.path.join(meipass, 'devices'))
             self.assertEqual(portable.firmware_root(),
                              os.path.join(os.path.dirname(exe), 'firmware'))
+            self.assertEqual(portable.app_root(self.home), self.home)
+
+    def test_frozen_macos_root_is_application_support(self):
+        # Nothing may be written inside the signed digiemu.app.
+        exe = os.path.join(self.tmp, 'digiemu.app', 'Contents', 'MacOS', 'digiemu')
+        meipass = os.path.join(self.tmp, 'digiemu.app', 'Contents', 'Frameworks')
+        support = os.path.join(self.tmp, 'Library', 'Application Support', 'digiemu')
+        os.environ['DIGIEMU_HOME'] = self.home     # ignored when frozen
+        with mock.patch.object(sys, 'frozen', True, create=True), \
+                mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(sys, '_MEIPASS', meipass, create=True), \
+                mock.patch.object(sys, 'executable', exe), \
+                mock.patch.dict(os.environ, {'HOME': self.tmp}):
+            self.assertEqual(portable.app_root(), support)
+            self.assertEqual(portable.local_app_home(), support)
+            self.assertEqual(portable.firmware_root(), os.path.join(support, 'firmware'))
+            self.assertEqual(portable.devices_dir(), os.path.join(meipass, 'devices'))
+            self.assertEqual(portable.cli_prefix(), '"%s"' % exe)
             self.assertEqual(portable.app_root(self.home), self.home)
 
     def test_slugs(self):

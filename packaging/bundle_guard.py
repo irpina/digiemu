@@ -1,4 +1,4 @@
-"""Keep firmware and private tooling out of the Windows bundle.
+"""Keep firmware and private tooling out of the app bundles.
 
 The portable app keeps its data next to the exe. firmware/<slug>/ fills up
 with the user's Elektron .syx, the sections extracted from it, snapshots of
@@ -30,10 +30,18 @@ audit() refuses both: an archive that lacks a module the app imports at run
 time (REQUIRED_MODULES), and an exe that still runs under Control Flow Guard
 (clear_guard_cf() explains why Unicorn cannot).
 
+The macOS app (digiemu.app) gets the same rules from audit_app(), adapted to
+its layout: PyInstaller's Contents/ tree, whose links are allowed as long as
+they stay inside the app, one arm64 executable, and libunicorn.2.dylib
+identified by its build UUID (macho_uuid() says why not its hash). It ships
+in a .dmg that tools/build-macos.sh makes from the audited app, not a zip.
+
 Stdlib only, plus PyInstaller's archive reader when present, so the tests can
 run it on synthetic trees. CLI:
     python packaging/bundle_guard.py DIST [--devices DIR] [--unicorn-sha256 HEX]
                                           [--require-pyz] [--zip OUT.zip]
+    python packaging/bundle_guard.py dist/digiemu.app [--devices DIR]
+                                          [--unicorn-source DYLIB] [--require-pyz]
 """
 import argparse
 import array
@@ -57,11 +65,16 @@ TOP_LEVEL = EXES + (CONTENTS,)
 UNICORN_DLL = CONTENTS + '/unicorn/lib/unicorn.dll'
 CAPSTONE_DLL = CONTENTS + '/capstone/lib/capstone.dll'
 
+# The macOS app, relative to digiemu.app (audit_app()).
+APP_EXE = 'Contents/MacOS/digiemu'
+APP_UNICORN = 'Contents/Frameworks/unicorn/lib/libunicorn.2.dylib'
+APP_CAPSTONE = 'Contents/Frameworks/capstone/lib/libcapstone.dylib'
+
 # Firmware and firmware-derived files. '.img.' also catches the card copies
 # (plusdrive.img.before-samples), '.snap.' half-written snapshots.
 DENY_SUFFIXES = ('.syx', '.snap', '.img', '.wav', '.pdf')
 DENY_PARTS = ('sections', 'snapshots', 'firmware', 'out', 'portable')
-DENY_NAMES = ('.source-sha256', '.ladder.json', 'firmware.json', 'unicorn.lib')
+DENY_NAMES = ('.source-sha256', '.ladder.json', 'firmware.json', 'unicorn.lib', 'libunicorn.a')
 DENY_PREFIXES = ('plusdrive', 'unicorn.dll.')
 SYSEX = b'\xf0\x00\x20\x3c'                         # F0, Elektron's manufacturer id
 
@@ -343,6 +356,58 @@ def exe_problem(path, rel):
     return None
 
 
+# -- Mach-O (the macOS app) -----------------------------------------------------
+MH_MAGIC_64 = 0xfeedfacf
+CPU_TYPE_ARM64 = 0x0100000c
+LC_UUID = 0x1b
+
+
+def macho_header(data):
+    """-> (cputype, ncmds, sizeofcmds) of the thin 64-bit Mach-O image
+    `data`, or raise ValueError."""
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != MH_MAGIC_64:
+        raise ValueError('not a thin 64-bit Mach-O image')
+    cputype, = struct.unpack_from('<I', data, 4)
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    if 32 + sizeofcmds > len(data):
+        raise ValueError('Mach-O load commands run past the end of the file')
+    return cputype, ncmds, sizeofcmds
+
+
+def macho_uuid(data):
+    """-> the LC_UUID (hex) of the thin 64-bit Mach-O image `data`, or raise
+    ValueError. The linker gives every build its own. PyInstaller rewrites
+    the library paths of every binary it bundles on macOS, then signs it,
+    and the signature is timestamped: no sha256 survives that, but the
+    UUID does, so audit_app() identifies the patched Unicorn by it."""
+    _cpu, ncmds, sizeofcmds = macho_header(data)
+    off, end = 32, 32 + sizeofcmds
+    for _ in range(ncmds):
+        if off + 8 > end:
+            raise ValueError('truncated Mach-O load command at 0x%x' % off)
+        cmd, size = struct.unpack_from('<II', data, off)
+        if size < 8 or off + size > end:
+            raise ValueError('bad Mach-O load command at 0x%x' % off)
+        if cmd == LC_UUID:
+            if size < 24:
+                raise ValueError('short LC_UUID at 0x%x' % off)
+            return data[off + 8:off + 24].hex()
+        off += size
+    raise ValueError('no LC_UUID')
+
+
+def app_exe_problem(path, rel):
+    """-> why `path` is not the app's arm64 executable, or None."""
+    try:
+        with open(path, 'rb') as fh:
+            cputype, _n, _s = macho_header(fh.read(1 << 16))
+    except (OSError, ValueError) as exc:
+        return '%s: %s' % (rel, exc)
+    if cputype != CPU_TYPE_ARM64:
+        return '%s: built for CPU type 0x%x, not arm64' % (rel, cputype)
+    return None
+
+
 def audit(dist, devices_dir=None, unicorn_sha256=None, lister=None,
           require_pyz=False, max_bytes=MAX_BYTES, required=REQUIRED_MODULES):
     """-> (files, problems). `files` are the bundle-relative paths ('/'
@@ -436,6 +501,115 @@ def audit(dist, devices_dir=None, unicorn_sha256=None, lister=None,
     return (sorted(files) if not problems else []), problems
 
 
+def _inside_app(link, real_app):
+    """Does the link at `link` resolve to somewhere inside the app?"""
+    target = os.path.realpath(link)
+    return target == real_app or target.startswith(real_app + os.sep)
+
+
+def audit_app(app, devices_dir=None, unicorn_uuid=None, lister=None,
+              require_pyz=False, max_bytes=MAX_BYTES, required=REQUIRED_MODULES):
+    """-> (files, problems) for the macOS app `app` (dist/digiemu.app), as
+    audit() is for the Windows folder: the same deny rules, firmware hashes,
+    size budget and archive checks. What differs is the layout. The app
+    holds only Contents/, and Contents/MacOS only the arm64 executable.
+    PyInstaller links Resources/ and Frameworks/ to each other, so links are
+    allowed, but only ones that resolve inside the app; their targets are
+    audited where they are. libunicorn.2.dylib must be exactly
+    APP_UNICORN, and when unicorn_uuid is given, carry that LC_UUID (see
+    macho_uuid()). `files` are the regular files, '/'-separated, sorted."""
+    problems = []
+    if not os.path.isdir(app):
+        return [], ['%s: no such folder' % app]
+    real_app = os.path.realpath(app)
+    top = sorted(os.listdir(app))
+    if top != ['Contents']:
+        problems.append('%s: the app must hold only Contents, found %s' % (app, ', '.join(top)))
+    macos = os.path.join(app, 'Contents', 'MacOS')
+    if os.path.isdir(macos) and sorted(os.listdir(macos)) != ['digiemu']:
+        problems.append('Contents/MacOS: must hold only digiemu, found %s'
+                        % ', '.join(sorted(os.listdir(macos))))
+
+    bad_hashes = firmware_hashes(devices_dir)
+    files, total, unicorns = [], 0, []
+    for here, dirs, names in os.walk(app):
+        for d in list(dirs):
+            full = os.path.join(here, d)
+            if _is_link(full):
+                rel = os.path.relpath(full, app).replace(os.sep, '/')
+                why = path_problem(rel)
+                if why:
+                    problems.append(why)
+                elif not _inside_app(full, real_app):
+                    problems.append('%s: link out of the app' % rel)
+                dirs.remove(d)
+        dirs.sort()
+        for n in sorted(names):
+            full = os.path.join(here, n)
+            rel = os.path.relpath(full, app).replace(os.sep, '/')
+            why = path_problem(rel)
+            if why:
+                problems.append(why)
+                continue
+            if _is_link(full):
+                if not _inside_app(full, real_app):
+                    problems.append('%s: link out of the app' % rel)
+                continue
+            head, sha = _scan(full)
+            total += os.path.getsize(full)
+            if head == SYSEX:
+                problems.append('%s: starts with an Elektron SysEx header' % rel)
+                continue
+            if sha in bad_hashes:
+                problems.append('%s: is a firmware release listed in %s' % (rel, devices_dir))
+                continue
+            if rel == APP_EXE:
+                why = app_exe_problem(full, rel)
+                if why:
+                    problems.append(why)
+            if n == 'libunicorn.2.dylib':
+                unicorns.append((rel, full))
+            files.append(rel)
+
+    if APP_EXE not in files:
+        problems.append('%s: missing' % APP_EXE)
+    if [r for r, _ in unicorns] != [APP_UNICORN]:
+        problems.append('libunicorn.2.dylib: expected exactly %s, found %r'
+                        % (APP_UNICORN, [r for r, _ in unicorns]))
+    elif unicorn_uuid:
+        try:
+            with open(unicorns[0][1], 'rb') as fh:
+                got = macho_uuid(fh.read())
+        except (OSError, ValueError) as exc:
+            got = 'unreadable (%s)' % exc
+        if got != unicorn_uuid.lower():
+            problems.append('%s: LC_UUID %s, expected the patched build %s'
+                            % (APP_UNICORN, got, unicorn_uuid.lower()))
+    if APP_CAPSTONE not in files:
+        problems.append('%s: missing' % APP_CAPSTONE)
+    if total > max_bytes:
+        problems.append('bundle is %d bytes, over the %d budget' % (total, max_bytes))
+
+    if lister is None and require_pyz:
+        problems.append('cannot list the executable\'s archive (PyInstaller not importable)')
+    elif lister is not None and APP_EXE in files:
+        try:
+            names = list(lister(os.path.join(app, *APP_EXE.split('/'))))
+        except Exception as exc:                    # noqa: BLE001
+            names = None
+            problems.append('%s: cannot list its archive: %s' % (APP_EXE, exc))
+        if names is not None:
+            for name in names:
+                why = module_problem(name)
+                if why:
+                    problems.append('%s: %s' % (APP_EXE, why))
+            missing = [m for m in required if m not in set(names)]
+            if missing:
+                problems.append('%s: the archive lacks modules the app imports at run time: %s'
+                                % (APP_EXE, ', '.join(missing)))
+    return (sorted(files) if not problems else []), problems
+
+
 def make_zip(dist, files, out, arcroot='digiemu'):
     """Write `files` (from a clean audit) under arcroot/ in the zip `out`,
     atomically: out.tmp, then os.replace. -> out."""
@@ -452,16 +626,31 @@ def make_zip(dist, files, out, arcroot='digiemu'):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('dist', help='the COLLECT folder, e.g. build-out/dist/digiemu')
+    ap.add_argument('dist', help='the COLLECT folder, e.g. build-out/dist/digiemu, '
+                    'or the macOS app, dist/digiemu.app')
     ap.add_argument('--devices', help='devices/ dir: its firmware hashes are refused')
     ap.add_argument('--unicorn-sha256', help='the patched unicorn.dll hash to require')
+    ap.add_argument('--unicorn-source', metavar='DYLIB',
+                    help='macOS: the patched libunicorn.2.dylib the app was built from; '
+                         'the bundled one must carry its LC_UUID')
     ap.add_argument('--require-pyz', action='store_true',
                     help='fail if the exe archives cannot be listed')
     ap.add_argument('--zip', metavar='OUT', help='write OUT.zip if the audit is clean')
     ap.add_argument('--arcroot', default='digiemu', help='folder name inside the zip')
     args = ap.parse_args(argv)
-    files, problems = audit(args.dist, args.devices, args.unicorn_sha256,
-                            pyinstaller_lister(), args.require_pyz)
+    if os.path.basename(os.path.normpath(args.dist)).endswith('.app'):
+        if args.zip or args.unicorn_sha256:
+            ap.error('a macOS app ships in a .dmg (tools/build-macos.sh), and its Unicorn '
+                     'is pinned with --unicorn-source')
+        uuid = None
+        if args.unicorn_source:
+            with open(args.unicorn_source, 'rb') as fh:
+                uuid = macho_uuid(fh.read())
+        files, problems = audit_app(args.dist, args.devices, uuid, pyinstaller_lister(),
+                                    args.require_pyz)
+    else:
+        files, problems = audit(args.dist, args.devices, args.unicorn_sha256,
+                                pyinstaller_lister(), args.require_pyz)
     for p in problems:
         print('REFUSED: %s' % p)
     if problems:

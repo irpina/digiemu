@@ -1,17 +1,31 @@
 name: Release
 
-# Pushing a tag vX.Y.Z builds the Windows zip on a Windows runner, from
-# source (the patched Unicorn included). It runs tools/build-windows.ps1's
-# checks and frozen self-test, then attaches the zip and SHA256SUMS.txt to a
-# DRAFT release for the tag. Publishing stays a person's decision.
+# Pushing a tag vX.Y.Z builds the Windows zip on a Windows runner and the
+# macOS app (Apple silicon) on a macOS runner, each from source (the patched
+# Unicorn included). They run tools/build-windows.ps1's and
+# tools/build-macos.sh's checks and frozen self-tests, then the zip, the .dmg
+# and one SHA256SUMS.txt are attached to a DRAFT release for the tag.
+# Publishing stays a person's decision.
+#
+# The macOS app is signed with a Developer ID certificate and notarized by
+# Apple, from these repository secrets:
+#   MACOS_CERTIFICATE           the Developer ID Application certificate and its
+#                               private key, exported as a .p12, base64-encoded
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's password
+#   NOTARY_KEY                  an App Store Connect API key (the AuthKey_<id>.p8
+#                               file's text), for notarytool
+#   NOTARY_KEY_ID               that key's ID
+#   NOTARY_ISSUER               the Issuer ID above the keys in App Store Connect
+# A pull request from a fork gets no secrets: its app is signed ad hoc and not
+# notarized. A tag without them fails.
 #
 # The tag must match APP_VERSION in emu/portable.py (tools/ci/release_version.py):
 # bump it in a pull request, merge, then tag the merge commit. Notes come from
 # docs/releases/vX.Y.Z.md when that file exists; otherwise the draft holds a
 # placeholder to replace before publishing.
 #
-# A pull request that touches the build runs the same build and keeps the zip
-# as a workflow artifact, without releasing anything.
+# A pull request that touches the build runs the same builds and keeps the
+# zip and the .dmg as workflow artifacts, without releasing anything.
 
 on:
   push:
@@ -24,8 +38,10 @@ on:
       - 'patches/**'
       - 'requirements.txt'
       - 'requirements-build.txt'
+      - 'tools/build-macos.sh'
       - 'tools/build-windows.ps1'
       - 'tools/install-patched-unicorn.ps1'
+      - 'tools/install-patched-unicorn.sh'
       - 'tools/ci/release_version.py'
   workflow_dispatch:
 
@@ -130,9 +146,143 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  macos-build:
+    name: macos-build
+    # Apple silicon. setup-python's 3.12 is python.org's build (universal2,
+    # with its own Tk); the spec makes an arm64-only app from it.
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Version (a tag must match APP_VERSION)
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v=$(python tools/ci/release_version.py --tag "$GITHUB_REF_NAME")
+          else
+            v=$(python tools/ci/release_version.py)
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "building digiemu $v"
+
+      - name: Venv (the app's requirements and the pinned build tools)
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -r requirements.txt -r requirements-build.txt
+
+      # From source every time, as on Windows: install-patched-unicorn.sh
+      # checks each patch's SHA-256 and Unicorn's pinned commit, then runs
+      # emu.unicorn_compat.
+      - name: Patched Unicorn (clang)
+        run: PYTHON="$RUNNER_TEMP/venv/bin/python" bash tools/install-patched-unicorn.sh
+
+      # The certificate goes into a keychain of its own, deleted at the end.
+      - name: Signing certificate
+        id: signing
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "a release must be signed, and the MACOS_CERTIFICATE secret is not set"
+              exit 1
+            fi
+            echo "no MACOS_CERTIFICATE: this build is signed ad hoc and not notarized"
+            exit 0
+          fi
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          pass=$(uuidgen)
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security create-keychain -p "$pass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pass" "$kc"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pass" "$kc" > /dev/null
+          # first in the search list, so codesign finds the identity
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          id=$(security find-identity -v -p codesigning "$kc" | awk '/"Developer ID Application: / { print $2; exit }')
+          if [ -z "$id" ]; then
+            echo "MACOS_CERTIFICATE holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "identity=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Build, sign, self-test, audit, notarize and make the .dmg
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_KEY_TEXT: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          args=(--python "$RUNNER_TEMP/venv/bin/python" --out "$RUNNER_TEMP/out" --version "$VERSION")
+          if [ -n "$IDENTITY" ]; then
+            printf '%s\n' "$NOTARY_KEY_TEXT" > "$NOTARY_KEY"
+            args+=(--identity "$IDENTITY" --notarize)
+          fi
+          bash tools/build-macos.sh "${args[@]}"
+
+      - name: Checksum and build info
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          out="$RUNNER_TEMP/out"
+          dmg="digiemu-macos-arm64-$VERSION.dmg"
+          printf '%s *%s\n' "$(shasum -a 256 "$out/$dmg" | awk '{print $1}')" "$dmg" > "$out/SHA256SUMS.txt"
+          lib=$("$RUNNER_TEMP/venv/bin/python" -c 'import os, unicorn; print(os.path.join(os.path.dirname(unicorn.__file__), "lib", "libunicorn.2.dylib"))')
+          printf 'unicorn_dylib_sha256=%s\npython=%s\nrunner=%s %s\n' \
+            "$(shasum -a 256 "$lib" | awk '{print $1}')" \
+            "$(python -c 'import sys; print(sys.version.split()[0])')" "$ImageOS" "$ImageVersion" \
+            > "$out/build-info.txt"
+          cat "$out/SHA256SUMS.txt" "$out/build-info.txt"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digiemu-macos-arm64-${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/out/digiemu-macos-arm64-*.dmg
+            ${{ runner.temp }}/out/SHA256SUMS.txt
+            ${{ runner.temp }}/out/build-info.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Keep the build logs of a failed build
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs-macos
+          path: |
+            ${{ runner.temp }}/out/*.log
+            ${{ runner.temp }}/out/*.out
+            ${{ runner.temp }}/out/selftest.json
+            ${{ runner.temp }}/out/unicorn-compat.json
+            ${{ runner.temp }}/out/work/digiemu-macos/warn-digiemu-macos.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Remove the keychain and the key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12"
+
   release:
     name: draft-release
-    needs: build
+    needs: [build, macos-build]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -144,18 +294,32 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: digiemu-win64-${{ needs.build.outputs.version }}
-          path: dist
+          path: dist/windows
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: digiemu-macos-arm64-${{ needs.macos-build.outputs.version }}
+          path: dist/macos
 
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.build.outputs.version }}
+          MAC_VERSION: ${{ needs.macos-build.outputs.version }}
         run: |
           set -euo pipefail
-          zip="dist/digiemu-win64-$VERSION.zip"
-          dll=$(sed -n 's/^unicorn_dll_sha256=//p' dist/build-info.txt)
-          py=$(sed -n 's/^python=//p' dist/build-info.txt)
+          if [ "$VERSION" != "$MAC_VERSION" ]; then
+            echo "the Windows build is $VERSION but the macOS build is $MAC_VERSION" >&2
+            exit 1
+          fi
+          zip="dist/windows/digiemu-win64-$VERSION.zip"
+          dmg="dist/macos/digiemu-macos-arm64-$VERSION.dmg"
+          cat dist/windows/SHA256SUMS.txt dist/macos/SHA256SUMS.txt > dist/SHA256SUMS.txt
+          dll=$(sed -n 's/^unicorn_dll_sha256=//p' dist/windows/build-info.txt)
+          py=$(sed -n 's/^python=//p' dist/windows/build-info.txt)
+          dylib=$(sed -n 's/^unicorn_dylib_sha256=//p' dist/macos/build-info.txt)
+          mpy=$(sed -n 's/^python=//p' dist/macos/build-info.txt)
           run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           {
             if [ -f "docs/releases/$TAG.md" ]; then
@@ -172,17 +336,21 @@ jobs:
             echo
             echo '## Build'
             echo
-            echo "Built by GitHub Actions from tag \`$TAG\` (commit \`${GITHUB_SHA:0:7}\`) with \`tools/build-windows.ps1\` on Python $py ([the run]($run)). The bundled \`unicorn.dll\` (SHA-256 \`$dll\`) is Unicorn 2.1.4 with the patches in \`patches/\`, built from source on the runner. **No Elektron firmware is included.** digiemu is not affiliated with or endorsed by Elektron."
+            echo "Built by GitHub Actions from tag \`$TAG\` (commit \`${GITHUB_SHA:0:7}\`) with \`tools/build-windows.ps1\` on Python $py ([the run]($run)). The bundled \`unicorn.dll\` (SHA-256 \`$dll\`) is Unicorn 2.1.4 with the patches in \`patches/\`, built from source on the runner."
+            echo
+            echo "The macOS app (Apple silicon) is built the same way, with \`tools/build-macos.sh\` on Python $mpy. Its \`libunicorn.2.dylib\` is built from the same sources (SHA-256 \`$dylib\` as built; bundling rewrites and signs it). The app is signed with a Developer ID and notarized by Apple."
+            echo
+            echo "**No Elektron firmware is included.** digiemu is not affiliated with or endorsed by Elektron."
           } > notes.md
           if gh release view "$TAG" --json isDraft --jq .isDraft > draft.txt 2>/dev/null; then
             if [ "$(cat draft.txt)" != true ]; then
               echo "release $TAG is already published; not replacing its files" >&2
               exit 1
             fi
-            gh release upload "$TAG" "$zip" dist/SHA256SUMS.txt --clobber
+            gh release upload "$TAG" "$zip" "$dmg" dist/SHA256SUMS.txt --clobber
             echo "updated the files of draft release $TAG"
           else
-            gh release create "$TAG" "$zip" dist/SHA256SUMS.txt \
+            gh release create "$TAG" "$zip" "$dmg" dist/SHA256SUMS.txt \
               --draft --verify-tag --title "digiemu $VERSION" --notes-file notes.md
             echo "drafted release $TAG"
           fi

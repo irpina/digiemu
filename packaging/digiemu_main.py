@@ -1,4 +1,4 @@
-"""Entry point of the portable app: digiemu.exe, digiemu-console.exe and dev.
+"""Entry point of the app: digiemu.exe, digiemu-console.exe, digiemu.app and dev.
 
 PyInstaller freezes this file as __main__ for both executables (digiemu.exe is
 windowed; digiemu-console.exe is the same program with a console, for
@@ -8,9 +8,11 @@ the next can go wrong:
 
 1. stdio. A windowed exe starts with sys.stdout and sys.stderr set to None.
    print() is then a silent no-op, and the emulator reports everything
-   through print(), so every diagnostic would be lost. When either stream is
-   None, it goes to <exe dir>/logs/launcher.log (UTF-8, line-buffered)
-   before anything can print. With PYTHONFAULTHANDLER or DIGIEMU_FAULTHANDLER
+   through print(), so every diagnostic would be lost. The macOS app,
+   opened from the Finder, starts with both on /dev/null, which loses as
+   much. When either stream is None (or, in the macOS app, /dev/null), it
+   goes to <app root>/logs/launcher.log (UTF-8, line-buffered) before
+   anything can print. With PYTHONFAULTHANDLER or DIGIEMU_FAULTHANDLER
    set, faulthandler writes there too. Real streams (a console, or the pipes
    the launcher reads a worker's JSON lines from) are switched to UTF-8.
    On a cp1252 pipe a non-Latin path raises UnicodeEncodeError, and
@@ -69,9 +71,14 @@ _import_module = importlib.import_module    # the tests put a stand-in here
 
 
 def app_root():
-    """Where the app keeps its data: next to the exe when frozen. In dev it
-    is $DIGIEMU_HOME, or <repo>/portable, as in emu.portable."""
+    """Where the app keeps its data: next to the exe when frozen, and in the
+    macOS app ~/Library/Application Support/digiemu (nothing may be written
+    inside the signed bundle). In dev it is $DIGIEMU_HOME, or
+    <repo>/portable, as in emu.portable."""
     if getattr(sys, 'frozen', False):
+        if sys.platform == 'darwin':
+            return os.path.join(os.path.expanduser('~'), 'Library', 'Application Support',
+                                'digiemu')
         return os.path.dirname(os.path.abspath(sys.executable))
     home = os.environ.get('DIGIEMU_HOME')
     if home:
@@ -112,9 +119,23 @@ def _open_log():
     return None
 
 
+def _is_devnull(stream):
+    """Is `stream` open on /dev/null?"""
+    try:
+        st, null = os.fstat(stream.fileno()), os.stat(os.devnull)
+    except (AttributeError, OSError, ValueError):
+        return False
+    return (st.st_dev, st.st_ino) == (null.st_dev, null.st_ino)
+
+
 def setup_stdio():
     """Give print() somewhere to go, in UTF-8. See the module docstring."""
     global _log
+    if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+        if _is_devnull(sys.stdout):
+            sys.stdout = None
+        if _is_devnull(sys.stderr):
+            sys.stderr = None
     for s in (sys.stdout, sys.stderr):
         if s is not None and hasattr(s, 'reconfigure'):
             try:
