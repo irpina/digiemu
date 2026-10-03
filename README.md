@@ -1,11 +1,11 @@
 # digiemu — a Digitakt mk1 and Digitone mk1 emulator
 
 digiemu runs the Elektron Digitakt (mk1)'s and Digitone (mk1)'s own firmware
-on a PC. An emulated ColdFire CPU boots the real operating system to its live
-user interface, and a clickable front panel plays it: the screen, every key
-and encoder with the key LEDs, the sequencer, the +Drive, and live 48 kHz
-audio. On the Digitone a second emulated CPU runs the firmware's own FM voice
-engine, and the Digitone has a window of its own.
+on a Windows PC or an Apple silicon Mac. An emulated ColdFire CPU boots the
+real operating system to its live user interface, and a clickable front panel
+plays it: the screen, every key and encoder with the key LEDs, the sequencer,
+the +Drive, and live 48 kHz audio. On the Digitone a second emulated CPU runs
+the firmware's own FM voice engine, and the Digitone has a window of its own.
 
 You bring the firmware. digiemu contains none of Elektron's code, and it is
 not affiliated with or endorsed by Elektron.
@@ -38,7 +38,8 @@ time, and a PC with Smart App Control turned on blocks it.
 1. Download `digiemu-macos-arm64-<version>.dmg` from
    [Releases](https://github.com/irpina/digiemu/releases), open it, and drag
    **digiemu** to **Applications**. It runs on Macs with Apple silicon (M1
-   or later), and it is signed and notarized by Apple.
+   or later), and it is signed and notarized by Apple: the first time, macOS
+   asks whether to open it, as it does for any app from the internet.
 2. Get the firmware from Elektron's website, as above.
 3. Open digiemu, click **Add firmware** and pick the `.syx`.
 4. When it says the firmware is ready, click **Play**.
@@ -178,6 +179,8 @@ for live audio; the Digitone also uses most of a second core.
 - The Digitone runs as a plain Digitone: the Digitone Keys' keyboard, wheels
   and extra keys are not there.
 - Some interrupt-controller behaviour is approximated rather than modelled.
+- The macOS app passes its self-test, but playing a firmware in it has not
+  been tested yet. There is no build for Intel Macs.
 
 [docs/STATUS.md](docs/STATUS.md) has the details and the list of open work.
 
