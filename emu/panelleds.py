@@ -55,6 +55,17 @@ SEED = {
     # (palette) higher; every operand site found in 1.43 agrees.
     ('Digitone', '1.44'): dict(slot_cache=0x4322AD43, selectors=0x419CF71C,
                                palette=0x40241E4C, leds=72, groups=18),
+    # 1.54: read from the LED task's init + flush + update functions
+    # (0x400e6680-0x400e6a26): init clears the 45-byte per-LED table-index
+    # cache at 0x439d0f14 and the 180-byte slot cache at 0x439d0f41; the
+    # palette shadow the B5 builder compares/updates is 0x4020dcb0. The
+    # 11-byte group-selector buffer at 0x421d2e17 is filled with 0xFF in
+    # init (all slots 3) and updated by the selector-update function at
+    # 0x400e6a14; the seed reads it as the group selector (2 bits per LED,
+    # LED 4g in bits 1:0).
+    '1.54': dict(slot_cache=0x439D0F41,
+                 selectors=0x421D2E17,
+                 palette=0x4020DCB0),
 }
 PALETTE = 41
 
