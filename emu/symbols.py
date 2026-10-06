@@ -720,10 +720,14 @@ SYMBOLS = [
     ('panel_diff', Sig(H(16, '10-13', '6:1c7c2479', '8f99d10321c5d0efc7fc03b0115beb1e')), False),
 
     # fb_front / fb_back: the first two distinct pointer-sized values in
-    # [0x40200000, 0x40400000) referenced within 0x120 bytes of panel_diff --
+    # [0x40100000, 0x40400000) referenced within 0x120 bytes of panel_diff --
     # the FRONT and BACK buffer-pointer variables, read in that order because
-    # the diff reads FRONT before it ever touches BACK.
-    ('_fb_pair', OperandGroup('panel_diff', span=0x120, lo=0x40200000, hi=0x40400000, take=2), False),
+    # the diff reads FRONT before it ever touches BACK. The floor was
+    # 0x40200000 until the Model:Cycles and Model:Samples, whose smaller
+    # images put the pair at 0x401492f0 and 0x4014553c: Cycles then found
+    # none and Samples two unrelated words. Lowering it changes nothing on the
+    # Digitakt (1.53, 1.54) or the Digitone (1.43, 1.44).
+    ('_fb_pair', OperandGroup('panel_diff', span=0x120, lo=0x40100000, hi=0x40400000, take=2), False),
     ('fb_front', Pick('_fb_pair', 0), False),
     ('fb_back', Pick('_fb_pair', 1), False),
 
@@ -1308,6 +1312,27 @@ SYMBOLS = [
                           hi=DATA_HI), False),
     ('dsp_request_sem', Operand('dsp_boot_task', at=0x3c), False),
     ('dsp_status', Operand('dsp_boot_task', at=0x9e), False),
+
+    # ----------------------------------------------------------------
+    # The Model:Cycles and Model:Samples (emu/modelboard.py). model_scan_start
+    # is the PIT3 handler that starts a scan of their front panel: it selects
+    # column 0 of the FlexBus device at 0x8C000000 and points vector 208 at
+    # the column reader (0x40059cd0 on Model:Cycles 1.13, 0x40058cf0 on
+    # Model:Samples 1.13). The six wildcards are the RAM variables and the
+    # next handler's address; the hardware addresses and the vector slot
+    # stay fixed. Its presence is what says "this is a Model": on every
+    # other image it stays unresolved and nothing is modelled.
+    # model_codec_task is the codec health task (0x40044188, 0x4004569c):
+    # it waits on model_codec_sem, a `pea` 0x1c bytes in, which a software-
+    # timer callback posts through a primitive semscan does not know.
+    # Both are unique in both Models and absent from Digitakt 1.53 and 1.54
+    # and Digitone 1.43 and 1.44.
+    # ----------------------------------------------------------------
+    ('model_scan_start', Sig(H(92, '20-23,28-31,34-37,44-47,50-53,72-75', '5:d7010341', '30d085b97022f559d14771c6fa9c8260'),
+                             hi=DATA_HI), False),
+    ('model_codec_task', Sig(H(46, '8-11,16-31', '12:1b3e49f9', '133a2a6d1b5cb652e247933788cf4203'),
+                             hi=DATA_HI), False),
+    ('model_codec_sem', Operand('model_codec_task', at=0x1c), False),
 
     # Every `bra.b $self` (opcode 60FE) -- the RTOS idiom for "nothing to do,
     # wait for the scheduler's timer tick to preempt me". dspboot.py already

@@ -72,7 +72,8 @@ class Profile:
 
     @property
     def channels(self):
-        return (self.rx_chan, self.tx_chan)
+        # A product with no audio input has no receive channel (None).
+        return tuple(c for c in (self.rx_chan, self.tx_chan) if c is not None)
 
 
 # Digitakt II, as originally measured: 32-byte minor loops, and the transmit
@@ -95,7 +96,18 @@ MK1 = Profile(
     csr_mask=0x16,
 )
 
-PROFILES = {p.name: p for p in (DIGITAKT2, MK1)}
+# Model:Cycles and Model:Samples: the Digitakt mk1's transmit shape (a 512-byte
+# buffer, 8 bytes a minor loop, 64 a major loop, CSR 6), but on SSI0 and eDMA
+# channel 50 as on the Digitakt II, and no receive channel -- neither has an
+# audio input. Read off the descriptors both program (OS 1.13); their SSI0
+# clock and word-length registers are the Digitakt mk1's SSI1 values.
+MODELS = Profile(
+    'models', None, 50, None, 0xFC0BC000, None, 170,
+    legacy={50: (0xFC0BC000, 0x0202, 4, 8, 0, 0x06)},
+    csr_mask=0x16,
+)
+
+PROFILES = {p.name: p for p in (DIGITAKT2, MK1, MODELS)}
 
 
 def _signed(value, bits):

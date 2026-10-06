@@ -275,7 +275,10 @@ def check_bootloader(paths, device, stage, handoff_path):
                      ddr=device.ddr_bytes or DEFAULT_DDR,
                      ui_card=device.ui_card if device.ui_card is not None
                      else 4, straps=device.straps,
-                     groups=device.button_groups())
+                     groups=device.button_groups(),
+                     container_at=device.container_at
+                     if device.container_at is not None
+                     else bootrom.CONTAINER_AT)
     stage.facts.update({
         'stop': r.stop, 'reached': ('0x%08x' % r.reached) if r.reached else None,
         'instructions': r.instructions,

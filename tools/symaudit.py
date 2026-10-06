@@ -45,6 +45,12 @@ ALLOWED_NONE = {
     'dsp_request_sem': 'Digitone only: follows dsp_boot_task',
     'dsp_status': 'Digitone only: follows dsp_boot_task',
     '_ssi0_dma_force_tail_dn': 'Digitone only: its transmit ISR tail',
+    # The Model:Cycles' and Model:Samples' board (emu/modelboard.py): their
+    # panel-scan handler and codec task. Unresolved is what keeps the board's
+    # models off every other product.
+    'model_scan_start': 'Models only: no scanned front panel on this image',
+    'model_codec_task': 'Models only: no I2C codec task on this image',
+    'model_codec_sem': 'Models only: follows model_codec_task',
 }
 
 # A `verify` shorter than this is weak evidence on its own: a handful of

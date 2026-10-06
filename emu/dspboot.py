@@ -383,6 +383,10 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
                         data_sem=profile.sd_data_sem,
                         dma_sem=profile.sd_dma_sem,
                         capacity_addr=getattr(profile, 'sd_capacity', None))
+    # The Model:Cycles' and Model:Samples' board: without its codec and delay
+    # timer the cold boot stops in the codec set-up. Nothing on other images.
+    from emu import modelboard
+    m.modelboard = modelboard.install(m, None, profile)
 
     m.install_mmio()
     m.install_exceptions()

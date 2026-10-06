@@ -226,11 +226,13 @@ class ShippedDeviceFilesTest(unittest.TestCase):
 
     def test_every_shipped_product_is_present(self):
         # Three since the mk1 port added devices/digitakt.toml, four since
-        # devices/digitone.toml. This used to read "both products" and assert
-        # the two Digitakt II-era ones.
+        # devices/digitone.toml, six since the Model:Cycles and Model:Samples.
+        # This used to read "both products" and assert the two Digitakt II-era
+        # ones.
         names = sorted(d.name for d in self.devices)
         self.assertEqual(names, ['Digitakt', 'Digitakt II', 'Digitone',
-                                 'Digitone II'])
+                                 'Digitone II', 'Model:Cycles',
+                                 'Model:Samples'])
 
     def test_digitone_panel_is_complete(self):
         """devices/digitone.toml: every measured code 1..54 has a label, a
@@ -256,10 +258,86 @@ class ShippedDeviceFilesTest(unittest.TestCase):
     def test_every_button_code_round_trips(self):
         for dev in self.devices:
             for code in dev.button_codes():
+                if code in dev.pads:        # a pad is read on the ADC
+                    continue
                 pos = dev.wire_for(code)
                 self.assertIsNotNone(pos, '%s code %d' % (dev.name, code))
                 self.assertEqual(dev.code_at(*pos), code,
                                  '%s code %d' % (dev.name, code))
+
+    def test_the_models_panels_are_complete(self):
+        """devices/model-*.toml: 31 keys and PITCH's push on 32 distinct scan
+        bits, six pads on six ADC channels, sixteen named encoders, and an
+        LED for every key and pad but the push, none shared."""
+        by_name = {d.name: d for d in self.devices}
+        for name in ('Model:Cycles', 'Model:Samples'):
+            dev = by_name[name]
+            self.assertEqual(dev.panel_kind, 'model', name)
+            keys = [c for c in dev.labels if c not in dev.pads]
+            self.assertEqual(len(keys), 32, name)
+            bits = [dev.wire_for(c) for c in keys]
+            self.assertNotIn(None, bits, name)
+            self.assertEqual(len(set(bits)), 32, name)
+            self.assertTrue(all(0 <= col < 4 and 0 <= bit < 8
+                                for col, bit in bits), name)
+            self.assertEqual(sorted(dev.pads.values()), list(range(6)), name)
+            self.assertEqual(sorted(dev.labels[c] for c in dev.pads),
+                             ['T1', 'T2', 'T3', 'T4', 'T5', 'T6'], name)
+            self.assertEqual(sorted(dev.encoder_labels), list(range(1, 17)),
+                             name)
+            self.assertEqual(len(set(dev.encoder_labels.values())), 16, name)
+            self.assertEqual(dev.encoders, 16, name)
+            self.assertEqual(len(dev.leds), 37, name)
+            self.assertTrue(all(0 <= led < 56 for led in dev.leds), name)
+            self.assertEqual(set(dev.leds.values()),
+                             set(dev.labels) - {32}, name)
+            self.assertTrue(dev.card_ekfs, name)
+            self.assertEqual(dev.audio['ssi_profile'], 'models', name)
+            self.assertEqual(dev.ddr_bytes, 128 << 20, name)
+            self.assertEqual(set(dev.firmwares[0].acceptance), {'mounted_u32'})
+        cycles, samples = by_name['Model:Cycles'], by_name['Model:Samples']
+        # One panel: the same codes on the same bits and LEDs.
+        self.assertEqual(cycles.exceptions, samples.exceptions)
+        self.assertEqual(cycles.leds, samples.leds)
+        self.assertEqual(cycles.pads, samples.pads)
+        renamed = {c: (cycles.labels[c], samples.labels[c])
+                   for c in cycles.labels
+                   if cycles.labels[c] != samples.labels[c]}
+        self.assertEqual(renamed, {5: ('MACHINE', 'WAVE'),
+                                   6: ('PUNCH', 'LOOP'),
+                                   7: ('GATE', 'FLIP')})
+
+    def test_flash_container_offset(self):
+        """[boot] container_at: where the bootstrap reads the OS container
+        in the 16 MB SPI flash (emu/bootrom.py); absent is the default."""
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(device.load(write_device(d)).container_at)
+        with tempfile.TemporaryDirectory() as d:
+            path = write_device(d, SYNTHETIC.replace(
+                '[panel]\n', '[boot]\ncontainer_at = 0x20000\n\n[panel]\n'))
+            self.assertEqual(device.load(path).container_at, 0x20000)
+        for bad in ('-1', '0x1000000', 'true', '"0x20000"'):
+            with tempfile.TemporaryDirectory() as d:
+                path = write_device(d, SYNTHETIC.replace(
+                    '[panel]\n', '[boot]\ncontainer_at = %s\n\n[panel]\n'
+                    % bad))
+                with self.assertRaises(device.DeviceError, msg=bad):
+                    device.load(path)
+        for name in ('model-cycles.toml', 'model-samples.toml'):
+            dev = device.load(os.path.join(DEVICES, name))
+            self.assertEqual((dev.container_at, dev.straps),
+                             (0x20000, {0xEC094018: 0x04}), name)
+
+    def test_pads_are_checked(self):
+        for bad in ('-1', '8', 'true', '"a"'):
+            with tempfile.TemporaryDirectory() as d:
+                path = write_device(d, SYNTHETIC.replace(
+                    '[panel]\n', '[panel]\n[panel.pads]\n40 = %s\n\n' % bad))
+                with self.assertRaises(device.DeviceError, msg=bad):
+                    device.load(path)
+        with tempfile.TemporaryDirectory() as d:
+            dev = device.load(write_device(d))
+        self.assertEqual((dev.pads, dev.encoder_labels), ({}, {}))
 
     def test_products_differ_where_the_hardware_does(self):
         by_name = {d.name: d for d in self.devices}

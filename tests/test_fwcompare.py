@@ -48,19 +48,31 @@ class ScriptTest(unittest.TestCase):
         """Each product's own pages: the first Digitone check stopped on a
         SRC key its panel does not have."""
         for name, pages in (('digitakt', ['src-page']),
-                            ('digitone', ['syn1-page', 'syn2-page'])):
+                            ('digitone', ['syn1-page', 'syn2-page']),
+                            ('model-cycles', ['machine-page', 'lfo-page']),
+                            ('model-samples', ['wave-page', 'lfo-page'])):
             dev = device.load(os.path.join(DEVICES, name + '.toml'))
             steps = fwcompare.parse_script(
                 fwcompare.default_script(dev.labels.values()))
             snaps = [s[1] for s in steps if s[0] == 'snap']
             with self.subTest(name=name):
                 self.assertIn('playing', snaps)
+                self.assertIn('trig-1', snaps)
                 for page in pages:
                     self.assertIn(page, snaps)
                 self.assertEqual(fwcompare.script_problems(steps, dev), [])
         self.assertNotIn('src-page', [s[1] for s in fwcompare.parse_script(
             fwcompare.default_script(['TRIG', 'SYN1', '1', 'PLAY', 'STOP']))
             if s[0] == 'snap'])
+
+    def test_a_model_plays_track_one_from_its_pad(self):
+        """The Models have no TRIG page key: pad T1 triggers track 1."""
+        steps = fwcompare.parse_script(fwcompare.default_script(
+            ['T1', 'PLAY', 'STOP', '1', 'MACHINE']))
+        taps = [s[1] for s in steps if s[0] == 'tap']
+        self.assertIn('T1', taps)
+        self.assertNotIn('TRIG', taps)
+        self.assertNotIn('1', taps)
 
     def test_script_problems(self):
         dn = device.load(os.path.join(DEVICES, 'digitone.toml'))

@@ -1,11 +1,13 @@
-# digiemu — a Digitakt mk1 and Digitone mk1 emulator
+# digiemu — a Digitakt mk1, Digitone mk1, Model:Cycles and Model:Samples emulator
 
-digiemu runs the Elektron Digitakt (mk1)'s and Digitone (mk1)'s own firmware
-on a Windows PC or an Apple silicon Mac. An emulated ColdFire CPU boots the
-real operating system to its live user interface, and a clickable front panel
-plays it: the screen, every key and encoder with the key LEDs, the sequencer,
-the +Drive, and live 48 kHz audio. On the Digitone a second emulated CPU runs
-the firmware's own FM voice engine, and the Digitone has a window of its own.
+digiemu runs the Elektron Digitakt (mk1)'s, Digitone (mk1)'s, Model:Cycles'
+and Model:Samples' own firmware on a Windows PC or an Apple silicon Mac. An
+emulated ColdFire CPU boots the real operating system to its live user
+interface, and a clickable front panel plays it: the screen, every key and
+encoder with the key LEDs, the sequencer, the +Drive, and live 48 kHz audio.
+On the Digitone a second emulated CPU runs the firmware's own FM voice
+engine. The Digitone has a window of its own, and the two Models share one,
+with velocity pads.
 
 You bring the firmware. digiemu contains none of Elektron's code, and it is
 not affiliated with or endorsed by Elektron.
@@ -17,8 +19,9 @@ not affiliated with or endorsed by Elektron.
    [Releases](https://github.com/irpina/digiemu/releases) and unzip it
    anywhere you can write to, except a OneDrive folder.
 2. Get the firmware from Elektron's website: `Digitakt_OS1.53.syx` for the
-   Digitakt, or `Digitone_and_Digitone_Keys_OS1.44.syx` (or 1.43) for the
-   Digitone.
+   Digitakt, `Digitone_and_Digitone_Keys_OS1.44.syx` (or 1.43) for the
+   Digitone, `model-cycles_OS1.13.syx` for the Model:Cycles or
+   `model-samples_OS1.13.syx` for the Model:Samples.
 3. Run `digiemu.exe`, click **Add firmware** and pick the `.syx`.
 4. When it says the firmware is ready, click **Play**.
 
@@ -27,8 +30,8 @@ per firmware. digiemu identifies the device and version from the file itself,
 prepares an emulated +Drive, and runs the firmware's own first boot, which
 installs the factory project and sounds onto it. From then on, **Play** opens
 that device's panel straight away, and closing the panel saves the session
-so the next Play carries on where you left off. Both devices can be set up
-side by side.
+so the next Play carries on where you left off. Any number of devices can be
+set up side by side.
 
 The exe is not code-signed, so Windows shows a SmartScreen prompt the first
 time, and a PC with Smart App Control turned on blocks it.
@@ -66,18 +69,27 @@ may be written inside the app itself.
   The firmware's own MIDI CONFIG still applies: after setup, PORT CONFIG >
   INPUT FROM is USB only, so set it to MIDI (and OUTPUT TO, for MIDI out).
   The Windows and macOS apps include MIDI; from source it needs `uv sync --extra midi`.
-- **LOAD SAMPLES** (Digitakt only): see below.
+- **LOAD SAMPLES** (Digitakt and Model:Samples): see below.
 
-Both windows share one plan: Master Volume and LEVEL/DATA at the top
-left, the screen, the eight encoders, and one row of keys under them with
-the parameter pages and PAGE. The Digitone window has its own
-keys (SYN1, SYN2, VOICE, KEYBOARD, T1–T4, MIDI). The Digitone has no
+The Digitakt and Digitone windows share one plan: Master Volume and
+LEVEL/DATA at the top left, the screen, the eight encoders, and one row of
+keys under them with the parameter pages and PAGE. The Digitone window has
+its own keys (SYN1, SYN2, VOICE, KEYBOARD, T1–T4, MIDI). The Digitone has no
 sample engine, so it has no LOAD SAMPLES.
+
+The Model:Cycles and Model:Samples share a window: VOLUME and LEVEL/DATA at
+the top left, fourteen knobs right of the screen, a row of keys, the
+transport, six pads and sixteen trig keys. VOLUME is the firmware's own
+knob, so there is no software Master Volume. **A pad's velocity is where you
+click it**: the top edge is the hardest hit. The key under PITCH is its push
+switch, which on the Model:Samples opens a folder or picks a sample in the
+sample browser (WAVE).
 
 ### Loading samples
 
 LOAD SAMPLES picks one or more WAV files and puts them in `/incoming` on the
-+Drive, where the Digitakt's sample browser finds them. Any WAV with 8-, 16-,
++Drive, where the Digitakt's (or the Model:Samples') sample browser finds
+them. Any WAV with 8-, 16-,
 24- or 32-bit integer samples or 32-bit float samples works, at any sample
 rate. Stereo is mixed down to mono, as on the hardware.
 
@@ -158,22 +170,28 @@ digiemu is tested with **Digitakt mk1 OS 1.53** (SHA-256
 **Digitone mk1 OS 1.43** (SHA-256
 `c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`) and
 **1.44** (SHA-256
-`d4f200d04484333d82822db7744e6484d0def8f2db8ddf55ee2b780cc13c9659`). Other
-releases of the two are offered as untested and run once you confirm. Other
-Elektron products are recognised and turned away for now.
+`d4f200d04484333d82822db7744e6484d0def8f2db8ddf55ee2b780cc13c9659`),
+**Model:Cycles OS 1.13** (SHA-256
+`44fe586269631a0ca7da25a3383fc6733c314809505fc3cc52f1e0ed9800640c`) and
+**Model:Samples OS 1.13** (SHA-256
+`e11859b68deb7e5e3fe86ab32581212093849c4be5d3950add011eac398a2ce8`). Other
+releases of these four are offered as untested and run once you confirm.
+Other Elektron products are recognised and turned away for now.
 
 **Works:** booting to the live user interface; every key, encoder and key
-LED; the sequencer and patterns; the +Drive with projects (and, on the
-Digitakt, samples); live 48 kHz audio. On the Digitone the FM voices are
-rendered by its second CPU's own code, on a thread of its own. A desktop
-runs about 2.5 times faster than the Digitakt needs, which leaves headroom
-for live audio; the Digitone also uses most of a second core.
-`tools/capbench.py` measures a given PC.
+LED (and the Models' pads, with velocity); the sequencer and patterns; the
++Drive with projects (and, on the Digitakt and Model:Samples, samples); live
+48 kHz audio; MIDI. On the Digitone the FM voices are rendered by its second
+CPU's own code, on a thread of its own. A desktop runs about 2.5 times
+faster than the Digitakt needs, which leaves headroom for live audio; the
+Digitone also uses most of a second core. `tools/capbench.py` measures a
+given PC. [MODELS.md](MODELS.md) covers what the Models add.
 
 **Not yet:**
-- The Digitakt's factory *sample* library lives on the real device's
-  storage, not in the firmware, so `/factory` is empty and sounds that use
-  it are silent.
+- The Digitakt's and Model:Samples' factory *sample* libraries live on the
+  real devices' storage, not in the firmware, so `/factory` is empty and
+  sounds that use it are silent until you load samples of your own.
+- The Models' USB audio and battery (Power Handle) are not modelled.
 - Whether a 44.1 kHz sample plays at the right pitch is not checked yet. A
   48 kHz sample's rendered output has been checked against its source.
 - The Digitone runs as a plain Digitone: the Digitone Keys' keyboard, wheels
@@ -285,6 +303,7 @@ snapshots, card images and any file over 1 MB, on every pull request.
 | [docs/FIRMWARE-CHECK.md](docs/FIRMWARE-CHECK.md) | Checking a custom build before it goes on a device: what `emu.fwcheck` checks and what it cannot |
 | [DIGITAKT-MK1.md](DIGITAKT-MK1.md) | How the mk1 emulation works: boot, panel, audio, sequencer, and the tools |
 | [DIGITONE-MK1.md](DIGITONE-MK1.md) | The Digitone: its second CPU, card, panel and measurements |
+| [MODELS.md](MODELS.md) | The Model:Cycles and Model:Samples: their scanned panel, codec, audio and +Drive |
 | [docs/mk1/](docs/mk1/00-INDEX.md) | The firmware reference: 01–09 are generated, 10 onwards written by hand |
 | [patches/README.md](patches/README.md) | The six Unicorn patches |
 | [docs/TOOLS.md](docs/TOOLS.md) | The reverse-engineering tools |

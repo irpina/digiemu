@@ -100,6 +100,10 @@ FRAME_HZ = 132_000_000 / ((0x2191 + 1) * 1024)     # 14.9996
 LATCHING_GROUPS = frozenset({'modifiers'})
 
 W, H = 128, 64
+# The colour a lit Model:Cycles or Model:Samples LED is drawn in. Their LEDs
+# are one colour each and on or off (emu/modelboard.py's rows), not the
+# Digitakt's RGB.
+MODEL_LED = (255, 72, 48)
 
 # Vertical space the window owes to everything that is not the panel: the
 # toolbar, three status lines, and the control surface, which is several rows
@@ -440,6 +444,9 @@ class Emulator(threading.Thread):
         self.led_version = 0
         self._led_state = None
         self._uart = None
+        # A Model:Cycles or Model:Samples board (emu/modelboard.py), once the
+        # machine is built: its panel takes the input and drives the LEDs.
+        self._board = None
         self.held = None            # panelin.Held, once the device is known
         self.button_names = {}      # control code -> the firmware's own name
         self.encoder_names = {}
@@ -459,8 +466,16 @@ class Emulator(threading.Thread):
             self.device, self.firmware = devices.identify(
                 config.firmware(self.syx))
             self.held = panelin.Held(self.device)
-            self.button_names = panelin.control_names(m, profile, 'button')
-            self.encoder_names = panelin.control_names(m, profile, 'encoder')
+            if self._board is not None:
+                # A Model's image has no control-name table to read: its
+                # names are the device file's, measured.
+                self.button_names = dict(self.device.labels)
+                self.encoder_names = dict(self.device.encoder_labels)
+            else:
+                self.button_names = panelin.control_names(m, profile,
+                                                          'button')
+                self.encoder_names = panelin.control_names(m, profile,
+                                                           'encoder')
         except SETUP_ERRORS as exc:                    # noqa: BLE001
             # DeviceError and NotFound too (see SETUP_ERRORS): the machine is
             # built by now, so this degrades to no control surface.
@@ -493,6 +508,10 @@ class Emulator(threading.Thread):
         it. Dropping the result would strand the run at the old address.
         """
         if self.held is None:
+            return pc
+        board = getattr(self, '_board', None)
+        if board is not None:
+            self._drain_model_input(board.panel)
             return pc
         paced = self._dwell_ms > 0
         # The dwell in chunks, from the timer rate in force NOW.
@@ -558,6 +577,45 @@ class Emulator(threading.Thread):
         print('[gui] input --feed %d:%s' % (self.stats['instrs'], bytes(out).hex()),
               flush=True)
         return new_pc
+
+    # A pad pressed from a window that does not say how hard.
+    PAD_VELOCITY = 100
+
+    def _drain_model_input(self, panel):
+        """Apply queued input to a Model's panel (emu/modelboard.py).
+
+        Nothing is paced here: the panel applies changes on its own scan
+        frames and holds each press, pad and encoder phase for as long as the
+        firmware needs to see it, so a click's press and release can both be
+        handed over at once. A pad's `arg` is its velocity (0: the default).
+        """
+        dev = self.device
+        while self.inbox:
+            kind, code, arg = self.inbox.popleft()
+            try:
+                if kind == 'encoder':
+                    channel = dev.encoder_channel(code)
+                    if channel is not None:
+                        panel.turn(channel, arg * getattr(dev, 'encoder_counts',
+                                                          1))
+                elif kind == 'release_all':
+                    panel.release_all()
+                elif kind in ('press', 'release'):
+                    down = kind == 'press'
+                    if code in dev.pads:
+                        panel.pad(dev.pads[code],
+                                  (arg or self.PAD_VELOCITY) if down else 0)
+                    else:
+                        pos = dev.wire_for(code)
+                        if pos is not None:
+                            panel.key(pos[0], pos[1], down)
+                else:
+                    continue
+            except ValueError as exc:
+                self.stats['status'] = 'panel input failed: %s' % exc
+                continue
+            print('[gui] input %s %s %s at %d'
+                  % (kind, code, arg, self.stats['instrs']), flush=True)
 
     def run(self):
         """The thread body: _run, with nothing allowed to escape unreported.
@@ -778,6 +836,7 @@ class Emulator(threading.Thread):
                 self.audio_live = False
             if self.midi_out is not None:
                 self.midi_out.install(m)
+            self._board = ev.get('modelboard')
             if self.patch_machine:
                 sys.path.insert(0, os.path.join(os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))), 'tools'))
@@ -1234,6 +1293,12 @@ class Emulator(threading.Thread):
         """
         if self.device is None or not getattr(self.device, 'leds', None):
             return
+        if self._board is not None:
+            # A Model drives its LED rows itself (emu/modelboard.py), and the
+            # rows are part of the board's saved state: nothing to seed.
+            self._led_from = None
+            self._update_leds()
+            return
         self._uart = ev.get('uart_out')
         if self._uart is None:
             return
@@ -1254,6 +1319,18 @@ class Emulator(threading.Thread):
         and it carries every OLED tile too, so kept whole it would grow for
         the life of the session.
         """
+        if getattr(self, '_board', None) is not None:
+            panel = self._board.panel
+            if panel.led_version == getattr(self, '_led_from', None):
+                return
+            self._led_from = panel.led_version
+            lit = panel.lit()
+            now = {led: (MODEL_LED if led in lit else (0, 0, 0))
+                   for led in self.device.leds}
+            if now != self.leds:
+                self.leds = now
+                self.led_version += 1
+            return
         st, buf = self._led_state, self._uart
         if st is None:
             return

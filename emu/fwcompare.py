@@ -17,10 +17,11 @@ A script is plain text, one step a line, `#` for comments:
     snap playing           name this moment: its screen is compared and saved
 
 Key names are the device file's [panel.labels] (PLAY, STOP, TRIG, SRC, the
-trig keys 1..16 ...); `#24` is a raw code. Encoders are A..H. A script is
-checked against the panel before anything boots. The default one visits the
-parameter pages the product has (SRC on a Digitakt, SYN1 and SYN2 on a
-Digitone).
+trig keys 1..16 ...); `#24` is a raw code. Encoders are A..H, or a number. A
+script is checked against the panel before anything boots. The default one
+visits the parameter pages the product has (SRC on a Digitakt, SYN1 and
+SYN2 on a Digitone, MACHINE or WAVE on a Model) and triggers track 1 (its
+trig key, or on a Model its pad, T1).
 
     python -m emu.fwcompare STOCK_FOLDER CUSTOM_FOLDER [--script FILE] [--out DIR]
 
@@ -45,21 +46,26 @@ from emu import panel
 
 # The parameter-page keys in panel order. The products differ here: the
 # Digitakt's SRC page is the Digitone's SYN1 and SYN2.
-PAGE_KEYS = ('TRIG', 'SRC', 'SYN1', 'SYN2', 'FLTR', 'AMP', 'LFO')
+PAGE_KEYS = ('TRIG', 'SRC', 'SYN1', 'SYN2', 'FLTR', 'AMP', 'LFO', 'MACHINE',
+             'WAVE')
 
 
 def default_script(labels):
     """-> the default script for a panel with these key labels (a device's
-    [panel.labels] values): each parameter page it has, then track 1's trig,
-    the pattern played and stopped."""
+    [panel.labels] values): each parameter page it has, then track 1's trig
+    (a Model has no TRIG page: its pad T1 plays track 1), the pattern played
+    and stopped."""
     have = {str(label).upper() for label in labels}
     lines = ['# Visit each parameter page, play the pattern, trigger track 1.',
              'wait 1000', 'snap start']
     for key in PAGE_KEYS:
         if key in have:
             lines += ['tap %s' % key, 'snap %s-page' % key.lower()]
-    lines += ['tap TRIG', 'tap 1 80 700', 'snap trig-1',
-              'tap PLAY', 'wait 2000', 'snap playing',
+    if 'TRIG' in have:
+        lines += ['tap TRIG', 'tap 1 80 700', 'snap trig-1']
+    elif 'T1' in have:
+        lines += ['tap T1 120 700', 'snap trig-1']
+    lines += ['tap PLAY', 'wait 2000', 'snap playing',
               'tap STOP', 'tap STOP', 'wait 500', 'snap stopped']
     return '\n'.join(lines) + '\n'
 

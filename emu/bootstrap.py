@@ -592,7 +592,7 @@ def boot_to_ui(syx, rung, out=None, progress=None, cancel=None, *,
     Raises StepFailed if the emulator stops (any spin stop but 'limit'),
     Cancelled if `cancel()` turns true between chunks.
     """
-    from emu import config, longrun, panel, symbols
+    from emu import config, longrun, modelboard, panel, symbols
     from emu.dtim import Dtims, Timers
     from emu.pit import Pits
 
@@ -601,6 +601,10 @@ def boot_to_ui(syx, rung, out=None, progress=None, cancel=None, *,
         img = fh.read()
     prof = symbols.resolve(img, load_addr=MAIN_LOAD)
     intro_isr, intro_done, frame_sem, mainloop = _from_profile(prof)
+    # A Model:Cycles or Model:Samples has no intro paced by PIT3 and nothing
+    # for intro_done to find: its panel scan claims vector 208 early, and
+    # that is when the OS gets its full timer set (emu/modelboard.py).
+    model = modelboard.is_model(prof)
     emit('note', 'symbols: intro_pit3_isr=0x%08X intro_done_hook=0x%08X '
          'frame_sem=0x%08X mainloop=0x%08X'
          % (intro_isr, intro_done, frame_sem, mainloop))
@@ -666,6 +670,9 @@ def boot_to_ui(syx, rung, out=None, progress=None, cancel=None, *,
                 flipped = total
                 emit('note', '  >> display module claimed vector 208 at %dM'
                      % (total // 1_000_000))
+                if model and not hits['intro_done']:
+                    emit('note', '  >> a Model: the OS timers start here')
+                    handover()
             phase = ('OS' if (slot and slot != intro_isr)
                      else ('post-intro' if hits['intro_done'] else 'intro'))
             emit('tick', '%5dM 0x%04x   %-8d 0x%08x   %-9d %s'

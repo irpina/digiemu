@@ -610,6 +610,20 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             skip.add(link.request_sem)
             ev['never_fake'] = ev['never_fake'] | {link.request_sem}
 
+    # The Model:Cycles and Model:Samples board (emu/modelboard.py): their
+    # panel scan, audio codec and delay timer. Only an image with the Models'
+    # scan handler gets it, so every other product's run and manifest are
+    # unchanged. Installed after emu/dsp.py's hook on 0x8C000002, so the
+    # panel's value is the one a read sees. The codec task's semaphore has a
+    # poster semscan cannot see, so it is never faked.
+    from emu import modelboard as _modelboard
+    board = _modelboard.install(m, ev, profile)
+    if board is not None:
+        checkpoint_manifest['modelboard'] = 1
+        if unblock and board.codec_sem is not None:
+            skip.add(board.codec_sem)
+            ev['never_fake'] = ev['never_fake'] | {board.codec_sem}
+
     def onr(uc, typ, addr, size, val, data):
         if addr == USR8: uc.mem_write(USR8, bytes([0x04 | (0x01 if inq else 0)]))
         elif addr == UDR8: uc.mem_write(UDR8, bytes([inq.popleft() if inq else 0]))
@@ -638,6 +652,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     checkpoint_components: dict[str, Any] = {'uart_in': inq}
     if link is not None:
         checkpoint_components['dsplink'] = link
+    if board is not None:
+        checkpoint_components['modelboard'] = board
     if tx is not None:
         checkpoint_components['edma_tx'] = tx
     if ssi0 is not None:

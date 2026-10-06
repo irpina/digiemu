@@ -10,7 +10,11 @@ Digitone mk1 OS 1.43, SHA-256
 `c5a54cc05b921f2e4bd814834c5365c2a5aa01d7772a9a2961fac1c3095bf9aa`, and
 1.44, SHA-256
 `d4f200d04484333d82822db7744e6484d0def8f2db8ddf55ee2b780cc13c9659`
-([DIGITONE-MK1.md](../DIGITONE-MK1.md)).
+([DIGITONE-MK1.md](../DIGITONE-MK1.md)), and Model:Cycles OS 1.13, SHA-256
+`44fe586269631a0ca7da25a3383fc6733c314809505fc3cc52f1e0ed9800640c`, and
+Model:Samples OS 1.13, SHA-256
+`e11859b68deb7e5e3fe86ab32581212093849c4be5d3950add011eac398a2ce8`
+([MODELS.md](../MODELS.md)).
 
 ## What works
 
@@ -39,6 +43,12 @@ Digitone mk1 OS 1.43, SHA-256
   live audio at 100% of real time: the second CPU runs the firmware's own FM
   voice code (`emu/dsplink.py`) on a thread of its own, one render per
   audio block, about 80% of a second core.
+- **The Model:Cycles and Model:Samples.** Both boot to their live UI (first
+  run in about 36 and 16 seconds) and share a window (`emu/mdpanel.py`)
+  with every key, the six pads with velocity, the sixteen encoders and the
+  key LEDs, and live audio at 100% of real time. Their board is
+  `emu/modelboard.py`: the panel the main CPU scans itself, the I2C codec
+  and the PIT1 delay. The Model:Samples loads samples like the Digitakt.
 - **Checking a build before it is flashed** (`emu.fwcheck`,
   [FIRMWARE-CHECK.md](FIRMWARE-CHECK.md)). It runs the stages below and
   compares each with the stock build:
@@ -110,6 +120,10 @@ Digitone mk1 OS 1.43, SHA-256
   sends by DMA goes out at once rather than at 31250 baud. Live DSP renders
   run on their own thread, so a live session is not
   instruction-for-instruction repeatable; batch runs are.
+- **The Models.** USB audio and MIDI, the battery (Power Handle) and a
+  pad's pressure after the hit are not modelled; the Model:Samples' factory
+  samples are not in the firmware. The keys are named by the firmware's
+  factory test, which may not be the words printed on the panel.
 - **Other devices.** The Digitakt II and Digitone II paths from upstream
   digikit still work as upstream left them.
 
