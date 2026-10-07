@@ -446,6 +446,11 @@ class SoftwareBank:
         self.channels = {}
         self.pending = []
         self.ssrt_starts = 0
+        # Called with the channel before an SSRT start moves any data, and
+        # after a transfer that ran at once: the live Digitone synchronises
+        # its DSP's renders with channel 47 here (emu/dsplink.attach_dma).
+        self.before_ssrt = None
+        self.after_ssrt = None
         self._native = None
         # SSRT starts go through Python on either path: the native engine
         # watches the CSRs only.
@@ -523,6 +528,8 @@ class SoftwareBank:
         channel = self.channels.get(v & 0x3F)
         if channel is None:
             return
+        if self.before_ssrt is not None:
+            self.before_ssrt(channel)
         channel._w16(CSR, channel._u16(CSR) | CSR_START)
         self.ssrt_starts += 1
         if not channel._mapped():
@@ -533,6 +540,8 @@ class SoftwareBank:
             return
         channel._transfer(uc, ensure=False)
         channel._apply()
+        if self.after_ssrt is not None:
+            self.after_ssrt(channel)
 
     # -- the run loop ---------------------------------------------------
     def step(self, done, remaining=None):
