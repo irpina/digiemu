@@ -25,8 +25,10 @@ not affiliated with or endorsed by Elektron.
 3. Run `digiemu.exe`, click **Add firmware** and pick the `.syx`.
 4. When it says the firmware is ready, click **Play**.
 
-Step 3 takes about 25 seconds on a desktop (longer on a slow laptop), once
-per firmware. digiemu identifies the device and version from the file itself,
+Step 3 runs once per firmware. On a desktop it takes about 25 seconds for a
+Digitakt or Digitone, 15 for a Model:Samples and 35 for a Model:Cycles
+(longer on a slow laptop). digiemu identifies the device and version from
+the file itself,
 prepares an emulated +Drive, and runs the firmware's own first boot, which
 installs the factory project and sounds onto it. From then on, **Play** opens
 that device's panel straight away, and closing the panel saves the session
@@ -55,10 +57,12 @@ may be written inside the app itself.
 
 - **Keys:** click to press. **Shift-click latches** a key, for combinations
   such as FUNC + a trig; Esc (or *clear latched*) releases them.
-- **Encoders:** mouse wheel or drag. Click the letter under a knob to push it.
-- **Master Volume** (top left): mouse wheel or drag. A software gain on
-  the live output and on PLAY's replay, from silent up to 1.5× (which can
-  clip). The real knob is analog, so the firmware never sees it.
+- **Encoders:** mouse wheel or drag. Click the letter under a knob (or, on
+  the Models, the key under PITCH) to push it.
+- **Master Volume** (Digitakt and Digitone, top left): mouse wheel or drag.
+  A software gain on the live output and on PLAY's replay, from silent up to
+  1.5× (which can clip). The real knob is analog, so the firmware never sees
+  it. On the Models, VOLUME is the firmware's own knob instead.
 - **Audio:** MUTE silences the live output. PLAY replays what has been
   recorded, CLEAR empties the recording, and SAVE WAV writes it to a file.
 - **MIDI:** the DIN MIDI IN and OUT ports. The MIDI button picks a device to
@@ -96,10 +100,10 @@ rate. Stereo is mixed down to mono, as on the hardware.
 The firmware reads the +Drive's file index only when it starts, so loading
 restarts it: digiemu saves and closes the session, writes the samples,
 rebuilds (about 15 seconds) and opens the panel again. **Changes to the
-project that you have not saved on the Digitakt may be lost**, so save first.
+project that you have not saved on the device may be lost**, so save first.
 
 A sample keeps its file name, without the extension, up to 64 characters. A
-name the Digitakt would confuse with one already there gets `-2`, `-3` and so
+name the firmware would confuse with one already there gets `-2`, `-3` and so
 on. Files that cannot be loaded are listed and left out before anything
 restarts.
 
@@ -131,9 +135,10 @@ digiemu-console.exe --check FILE.syx         check a build before you flash it (
 ```
 
 On the Mac the same program is `/Applications/digiemu.app/Contents/MacOS/digiemu`,
-with the same options. `--home DIR` uses another data folder. Setting up takes about 23 seconds on
-the reference desktop, or about 13 seconds on a +Drive that already holds
-the factory content.
+with the same options. `--home DIR` uses another data folder. On the
+reference desktop, setting up takes about 23 seconds for a Digitakt (about
+13 on a +Drive that already holds the factory content), 25 for a Digitone,
+16 for a Model:Samples and 36 for a Model:Cycles.
 
 ### Checking a custom build before you flash it
 
@@ -222,7 +227,8 @@ live audio.
 
 To work on the emulator itself (the panel on its own, the boot tools, the
 tracing tools), start with [DIGITAKT-MK1.md](DIGITAKT-MK1.md);
-[DIGITONE-MK1.md](DIGITONE-MK1.md) covers what the Digitone adds.
+[DIGITONE-MK1.md](DIGITONE-MK1.md) covers what the Digitone adds, and
+[MODELS.md](MODELS.md) what the Model:Cycles and Model:Samples add.
 
 ### Building the Windows app
 
@@ -285,8 +291,9 @@ Connect API key for notarizing: `NOTARY_KEY` (the `.p8` file's text),
 
 A pull request that changes the build runs the same builds without
 releasing anything, and keeps the zip and the `.dmg` as workflow artifacts.
-A pull request from a fork has no secrets, so its app is signed ad hoc and
-not notarized.
+Its app is signed with the Developer ID but not notarized: only a tag or a
+manual run waits on Apple. A pull request from a fork has no secrets, so its
+app is signed ad hoc.
 
 ### Tests
 
