@@ -113,6 +113,7 @@ DSP_LOAD = 0x40000400
 DSP_ENTRY = 0x40000b92
 DSP_IDLE = 0x40000b90
 DSP_VECTOR, DSP_LEVEL = 96, 3   # DTIM0 capture: ICR32 = 3
+DMA_CHANNEL = 47                # the main CPU's eDMA through the shared RAM
 DSP_INITIAL_SP = 0x8000FFEC     # what section 6 leaves; section 7 resets it
 DSP_PAGES = (0x40000000, 0x47F00000, 0x80000000)
 # Reads section 7 waits on before it will shake hands (VERIFIED by removing
@@ -288,6 +289,11 @@ class DspCpu(_MainSide):
         # turns it on (emu/gui.py); every other run steps the DSP in line,
         # so it is deterministic. See start_thread().
         self.threaded = False
+        # early: each render starts when the main CPU's eDMA has written its
+        # parameters, a block before the request (attach_dma).
+        self.early = False
+        self.prestarted = False     # the next request's render has started
+        self._dma_params = False    # the channel-47 start in hand writes here
         self._lock = threading.Lock()
         self._job = threading.Condition(self._lock)
         self._busy = False
@@ -364,7 +370,29 @@ class DspCpu(_MainSide):
                 # DTIM0's capture flag is one latch: edges that arrive while
                 # the DSP cannot take them are one interrupt, not several.
                 with self._lock:
+                    if self.prestarted:
+                        # This request's render started when its parameters
+                        # landed (_after_dma): nothing more to start.
+                        self.prestarted = False
+                        self.fired['pa4'] += 1
+                        return
                     self.irqs = 1
+                    if self.threaded and self.booted:
+                        # The main CPU reads block k right after it asks
+                        # for block k+1 -- which is this write -- so block
+                        # k's render must be finished before it runs on,
+                        # and block k+1's starts now, to run through the
+                        # whole gap to the next request. Waiting and
+                        # starting at the next step boundary instead let it
+                        # read a half-rendered block whenever the render
+                        # ran late: a phase jump at a 32-sample edge, heard
+                        # as crackle.
+                        while self._busy:
+                            self._job.wait()
+                        if self.dsp is not None and self.irqs:
+                            self.irqs = 0
+                            self._busy = True
+                            self._job.notify_all()
                 self.fired['pa4'] += 1
 
     def reset_released(self):
@@ -381,6 +409,7 @@ class DspCpu(_MainSide):
         self.idle = False
         self.booted = False
         self.irqs = 0
+        self.prestarted = False
         self.pg2 = 0
         self.fired['boot'] += 1
 
@@ -392,6 +421,7 @@ class DspCpu(_MainSide):
         self.idle = False
         self.booted = False
         self.irqs = 0
+        self.prestarted = False
 
     def _run(self, instructions):
         """Run the DSP for up to `instructions`, stopping at its idle loop."""
@@ -521,6 +551,60 @@ class DspCpu(_MainSide):
                 self._busy = False
                 self._job.notify_all()
 
+    # -- the main CPU's eDMA through the shared RAM ------------------------
+    # Every block the main CPU asks for a render (PA4), then its audio
+    # handler starts channel 47 twice: the voices out of the shared RAM
+    # (+0x3A0, 0x400 bytes), then the next block's parameters into it (+0,
+    # 0x3A0 bytes). Nothing else of the main CPU's touches the RAM, so the
+    # render for the next request depends only on those parameters. On the
+    # hardware the DSP renders in a fraction of the time the main CPU takes
+    # to reach the voices; here a render takes about half a block. Started
+    # at the request, the main CPU spent that half waiting for it, and not
+    # waiting (the old threaded path) read half-written blocks: a phase
+    # jump at a 32-sample edge, heard as crackle. Started as soon as its
+    # parameters land it has a whole block to run beside the main CPU, and
+    # the wait before the voices are moved is the guarantee.
+    def attach_dma(self, bank):
+        """Render early, synchronised with `bank`'s SSRT starts."""
+        self.early = True
+        bank.before_ssrt = self._before_dma
+        bank.after_ssrt = self._after_dma
+
+    def _before_dma(self, channel):
+        if channel.channel != DMA_CHANNEL:
+            return
+        self.wait_idle()
+        dst = channel._u32(0x10)                        # DADDR
+        self._dma_params = WINDOW <= dst < WINDOW + self._page
+
+    def _after_dma(self, channel):
+        if channel.channel != DMA_CHANNEL or not self._dma_params:
+            return
+        self._dma_params = False
+        if not (self.early and self.booted) or self.dsp is None:
+            return
+        with self._lock:
+            if self.prestarted:
+                # Parameters twice without a request between: the render
+                # already started takes them as they were.
+                self.fired['early_skipped'] += 1
+                return
+            if self.irqs:
+                # A request still on the latch (in line, it waits for the
+                # next step boundary): its render is this one, now.
+                self.irqs = 0
+                self.fired['early_latched'] += 1
+            else:
+                self.prestarted = True
+                self.fired['early'] += 1
+            if self.threaded:
+                while self._busy:
+                    self._job.wait()
+                self._busy = True
+                self._job.notify_all()
+                return
+        self._service_dsp(self.dsp, 0, taken=True)
+
     def wait_idle(self):
         """Wait for a render in flight to finish (before a snapshot, a
         reset or teardown touches the DSP's engine)."""
@@ -543,7 +627,8 @@ class DspCpu(_MainSide):
         state = {'type': 'DspCpu', 'version': 1, 'on': self.dsp is not None,
                  'pulses': self.pulses, 'irqs': self.irqs, 'pa4': self.pa4,
                  'pg2': self.pg2, 'now': self.now, 'last': self.last,
-                 'renders': self.renders, 'fired': dict(self.fired)}
+                 'renders': self.renders, 'fired': dict(self.fired),
+                 'prestarted': self.prestarted}
         if self.dsp is None:
             return state
         from emu.snapshot import REGS
@@ -575,6 +660,7 @@ class DspCpu(_MainSide):
         self.now, self.last = state['now'], state['last']
         self.renders = state['renders']
         self.fired = collections.Counter(state.get('fired') or {})
+        self.prestarted = bool(state.get('prestarted', False))
         if not state.get('on'):
             self.reset_asserted()
             return

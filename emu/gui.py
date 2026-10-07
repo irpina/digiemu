@@ -774,6 +774,7 @@ class Emulator(threading.Thread):
                 dsp = ev.get('dspcpu')
                 if dsp is not None and self.audio_live:
                     dsp.start_thread()
+                    dsp.attach_dma(ev['edma_sw_bank'])
             else:
                 self.audio_live = False
             if self.midi_out is not None:

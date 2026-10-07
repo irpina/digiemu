@@ -209,6 +209,104 @@ class DspCpuTest(unittest.TestCase):
         finally:
             cpu.close()
 
+    def test_a_threaded_request_waits_for_the_render_in_flight(self):
+        # The main CPU reads block k right after it asks for block k+1: the
+        # request must not return while block k is still rendering.
+        import time
+        m, cpu = self.boot()
+        real = cpu._service_dsp
+
+        def late(*args, **kw):
+            time.sleep(0.02)
+            return real(*args, **kw)
+        cpu._service_dsp = late
+        cpu.start_thread()
+        try:
+            _guest_byte(m, dsplink.PA4_SET, dsplink.PA4_BIT)
+            _guest_byte(m, dsplink.PA4_CLR, 0xFF & ~dsplink.PA4_BIT)
+            self.assertGreaterEqual(cpu.renders, 1)     # no service() between
+            cpu.wait_idle()
+            self.assertEqual(cpu.renders, 2)
+        finally:
+            cpu.close()
+
+    @staticmethod
+    def _ch47(dst):
+        from types import SimpleNamespace
+        return SimpleNamespace(channel=dsplink.DMA_CHANNEL,
+                               _u32=lambda off: dst if off == 0x10 else 0)
+
+    def _attach(self, cpu):
+        from types import SimpleNamespace
+        bank = SimpleNamespace(before_ssrt=None, after_ssrt=None)
+        cpu.attach_dma(bank)
+        return bank
+
+    def test_a_render_starts_when_its_parameters_land(self):
+        m, cpu = self.boot()
+        bank = self._attach(cpu)
+        params = self._ch47(dsplink.WINDOW)
+        bank.before_ssrt(params)
+        bank.after_ssrt(params)
+        self.assertEqual(cpu.renders, 1)
+        self.assertTrue(cpu.prestarted)
+        # The request it was started for is then only taken off.
+        _guest_byte(m, dsplink.PA4_SET, dsplink.PA4_BIT)
+        self.assertEqual((cpu.irqs, cpu.prestarted), (0, False))
+        cpu.service(50_000_000)
+        self.assertEqual(cpu.renders, 1)
+        # A transfer out of the shared RAM (the voices) starts nothing.
+        voices = self._ch47(0x80004110)
+        bank.before_ssrt(voices)
+        bank.after_ssrt(voices)
+        self.assertEqual(cpu.renders, 1)
+
+    def test_a_latched_request_renders_when_the_parameters_land(self):
+        m, cpu = self.boot()
+        bank = self._attach(cpu)
+        _guest_byte(m, dsplink.PA4_SET, dsplink.PA4_BIT)       # in line: latched
+        self.assertEqual(cpu.irqs, 1)
+        params = self._ch47(dsplink.WINDOW)
+        bank.before_ssrt(params)
+        bank.after_ssrt(params)
+        self.assertEqual((cpu.renders, cpu.irqs, cpu.prestarted), (1, 0, False))
+
+    def test_threaded_the_voices_wait_for_the_early_render(self):
+        import time
+        m, cpu = self.boot()
+        real = cpu._service_dsp
+
+        def late(*args, **kw):
+            time.sleep(0.02)
+            return real(*args, **kw)
+        cpu._service_dsp = late
+        bank = self._attach(cpu)
+        cpu.start_thread()
+        try:
+            params = self._ch47(dsplink.WINDOW)
+            bank.before_ssrt(params)
+            bank.after_ssrt(params)                     # starts on the thread
+            bank.before_ssrt(self._ch47(0x80004110))     # voices: must wait
+            self.assertEqual(cpu.renders, 1)
+            self.assertEqual(m.peek(dsplink.WINDOW + COUNTER, 4),
+                             struct.pack('>I', 1))
+        finally:
+            cpu.close()
+
+    def test_a_started_render_survives_a_checkpoint(self):
+        m, cpu = self.boot()
+        bank = self._attach(cpu)
+        params = self._ch47(dsplink.WINDOW)
+        bank.before_ssrt(params)
+        bank.after_ssrt(params)
+        state = cpu.checkpoint_state()
+        again = dsplink.DspCpu(_main(), _section7())
+        again.restore_checkpoint_state(state)
+        self.assertTrue(again.prestarted)
+        again.restore_checkpoint_state({k: v for k, v in state.items()
+                                        if k != 'prestarted'})
+        self.assertFalse(again.prestarted)              # older sessions
+
     def test_reset_stops_it(self):
         m, cpu = self.boot()
         _guest_byte(m, dsplink.RESET_CLR, 0xFF & ~dsplink.RESET_BIT)
