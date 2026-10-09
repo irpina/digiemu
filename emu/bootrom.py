@@ -554,16 +554,18 @@ class BootResult:
         return dict(self.__dict__)
 
 
-def flash_image(syx_path, bootstrap_section=None, size=FLASH_SIZE):
+def flash_image(syx_path, bootstrap_section=None, size=FLASH_SIZE,
+                container_at=CONTAINER_AT):
     """-> bytes of the SPI flash as an update would leave it: the container
-    at CONTAINER_AT (emu/dspboot.py's layout), erased elsewhere."""
+    at `container_at` (CONTAINER_AT, emu/dspboot.py's layout, unless the
+    device file's [boot] container_at says otherwise), erased elsewhere."""
     from dt2.container import container
     flash = bytearray(b'\xff' * size)
     c = container(syx_path)
-    if CONTAINER_AT + len(c) > size:
+    if container_at + len(c) > size:
         raise ValueError('the container (%d bytes) does not fit the %d MB '
-                         'flash after 0x%x' % (len(c), size >> 20, CONTAINER_AT))
-    flash[CONTAINER_AT:CONTAINER_AT + len(c)] = c
+                         'flash after 0x%x' % (len(c), size >> 20, container_at))
+    flash[container_at:container_at + len(c)] = c
     return bytes(flash)
 
 
@@ -590,7 +592,8 @@ UPDATER_ID, UPDATER_IMAGE = 4, 0x80000408
 
 def boot(syx_path, bootstrap_section, main_image, *, ddr=128 * MB,
          limit=400_000_000, chunk=2_000_000, on_machine=None, trace=None,
-         mode=0, held=None, ui_card=4, straps=None, groups=6):
+         mode=0, held=None, ui_card=4, straps=None, groups=6,
+         container_at=CONTAINER_AT):
     """Run the bootstrap from its reset vector until it jumps into DDR.
 
     The bootstrap loads the updater (section id 4) over itself in SRAM and
@@ -628,7 +631,7 @@ def boot(syx_path, bootstrap_section, main_image, *, ddr=128 * MB,
                 skipped.extend(upd_wdebug)
             m.uc.hook_add(UC_HOOK_CODE, patch_updater, begin=upd_entry,
                           end=upd_entry)
-    flash = SpiFlash(flash_image(syx_path))
+    flash = SpiFlash(flash_image(syx_path, container_at=container_at))
     # The flash answers on PCS1: every frame the bootstrap sends selects it.
     dspi = Dspi(m, devices={FLASH_PCS: flash})
     hw = BootHardware(m, straps=straps)

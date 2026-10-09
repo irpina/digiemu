@@ -58,13 +58,16 @@ MAX_FILE = 64 << 20              # OS files are 1-3 MB; refuse to slurp a video
 
 # (transport id, OS-stream id) -> (product, short). Only used to NAME a
 # product no device file claims; a device file's own name and short win.
-# Digitakt is measured on OS 1.53; the rest are docs/FINDINGS.md's table.
+# Digitakt is measured on OS 1.53 and the Models on OS 1.13; the rest are
+# docs/FINDINGS.md's table.
 PRODUCTS = {
     (0x0A, 0x05): ('Digitakt', 'dt1'),
     (0x14, 0x0F): ('Digitakt II', 'dt2'),
     (0x15, 0x10): ('Digitone II', 'dn2'),
     (0x16, 0x11): ('Syntakt', 'syn'),
     (0x0D, 0x08): ('Digitone', 'dn1'),
+    (0x11, 0x0C): ('Model:Cycles', 'mc'),
+    (0x0F, 0x0A): ('Model:Samples', 'ms'),
 }
 
 KNOWN, UNTESTED, UNSUPPORTED = 'known', 'untested', 'unsupported'

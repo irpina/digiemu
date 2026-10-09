@@ -1362,6 +1362,101 @@ class PanelLayoutTest(unittest.TestCase):
 
 
 @NEEDS_GUI
+class ModelPanelLayoutTest(unittest.TestCase):
+    """The Model:Cycles and Model:Samples window (emu/mdpanel.py) places
+    every key, pad and knob its device file names, on the panel, clear of
+    the screen and of each other -- knob names, two lines each, included."""
+
+    def setUp(self):
+        from emu import device, dtpanel, gui, mdpanel
+        self.md, self.dt, self.gui = mdpanel, dtpanel, gui
+        devices = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'devices')
+        self.devs = [device.load(os.path.join(devices, n))
+                     for n in ('model-cycles.toml', 'model-samples.toml')]
+
+    def boxes(self, dev):
+        buttons, encoders = self.md.layout(dev.name)
+        cls = self.md.ModelPanel
+        out = {'button ' + k: (x, y, x + w, y + h)
+               for k, (x, y, w, h, _s, _t) in buttons.items()
+               if k in dev.labels.values()}
+        for k, (x, y, r) in encoders.items():
+            out['encoder ' + k] = (x - r, y - r, x + r, y + r)
+            if k not in dev.labels.values():        # its name is drawn under it
+                lines = self.md.knob_label_lines(k)
+                half = 3.2 * max(len(line) for line in lines)
+                out['name ' + k] = (x - half, y + r + 4, x + half,
+                                    y + r + 4 + 12 * len(lines))
+        sx, sy = cls.SCREEN_X, cls.SCREEN_Y
+        out['screen'] = (sx, sy, sx + self.gui.W * self.dt.SCALE,
+                         sy + self.gui.H * self.dt.SCALE)
+        return out
+
+    def test_every_control_has_a_place(self):
+        for dev in self.devs:
+            buttons, encoders = self.md.layout(dev.name)
+            self.assertEqual(set(dev.labels.values()) - set(buttons), set(),
+                             dev.name)
+            self.assertEqual(set(encoders), set(dev.encoder_labels.values()),
+                             dev.name)
+
+    def test_nothing_overlaps_or_leaves_the_panel(self):
+        cls = self.md.ModelPanel
+        for dev in self.devs:
+            boxes = sorted(self.boxes(dev).items())
+            for name, (x0, y0, x1, y1) in boxes:
+                self.assertTrue(0 <= x0 < x1 <= cls.PANEL_W
+                                and 70 <= y0 < y1 <= cls.PANEL_H,
+                                '%s: %s' % (dev.name, name))
+            for i, (a, ba) in enumerate(boxes):
+                for b, bb in boxes[i + 1:]:
+                    apart = (ba[2] <= bb[0] or bb[2] <= ba[0]
+                             or ba[3] <= bb[1] or bb[3] <= ba[1])
+                    self.assertTrue(apart, '%s: %s overlaps %s'
+                                    % (dev.name, a, b))
+
+    def test_it_is_a_digitakt_window_with_volume_as_an_encoder(self):
+        cls = self.md.ModelPanel
+        self.assertTrue(issubclass(cls, self.dt.DigitaktPanel))
+        _b, encoders = self.md.layout('Model:Cycles')
+        self.assertEqual(encoders['VOLUME'], self.dt.MASTER_VOLUME)
+
+
+class ModelInputTest(Quiet):
+    """On a Model, _drain_input hands keys, pads and encoders to the board's
+    panel (emu/modelboard.py) at once, by the device file's positions."""
+
+    def test_keys_pads_and_encoders_reach_the_panel(self):
+        from emu import gui
+        calls = []
+        panel = types.SimpleNamespace(
+            key=lambda col, bit, down: calls.append(('key', col, bit, down)),
+            pad=lambda ch, vel: calls.append(('pad', ch, vel)),
+            turn=lambda enc, steps: calls.append(('turn', enc, steps)),
+            release_all=lambda: calls.append(('all',)))
+        dev = types.SimpleNamespace(
+            pads={33: 5}, wire_for=lambda code: {10: (0, 7)}.get(code),
+            encoder_channel=lambda code: code - 1, encoder_counts=1)
+        emu = types.SimpleNamespace(
+            held=object(), _board=types.SimpleNamespace(panel=panel),
+            device=dev, stats={'instrs': 0, 'status': ''},
+            PAD_VELOCITY=gui.Emulator.PAD_VELOCITY,
+            inbox=deque([('press', 10, 0), ('release', 10, 0),
+                         ('press', 33, 64), ('release', 33, 0),
+                         ('press', 33, 0), ('encoder', 13, -2),
+                         ('press', 99, 0), ('release_all', 0, 0)]))
+        emu._drain_model_input = lambda p: gui.Emulator._drain_model_input(
+            emu, p)
+        self.assertEqual(gui.Emulator._drain_input(emu, None, None, 0x40), 0x40)
+        self.assertEqual(calls, [('key', 0, 7, True), ('key', 0, 7, False),
+                                 ('pad', 5, 64), ('pad', 5, 0),
+                                 ('pad', 5, gui.Emulator.PAD_VELOCITY),
+                                 ('turn', 12, -2), ('all',)])
+        self.assertFalse(emu.inbox)
+
+
+@NEEDS_GUI
 class ScreenFrameTest(unittest.TestCase):
     """The window's screen buffer holds nothing but whole firmware frames.
 

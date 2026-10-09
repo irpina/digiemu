@@ -182,6 +182,10 @@ class Session:
                     self._latched = buf
             at(prof.panel_diff, latch)
         self.held = panelin.Held(self.device)
+        # A Model:Cycles or Model:Samples scans its own panel
+        # (emu/modelboard.py): its keys, pads and encoders go there.
+        board = ev.get('modelboard')
+        self.model_panel = board.panel if board is not None else None
 
         # Strict mode (emu/strict.py), sharing the cycle clock's block hook
         # when there is one. Its watchdog runs on core cycles: the clock's,
@@ -249,7 +253,28 @@ class Session:
         self.pc = panelin.feed(self.m, self.profile, bytes(data))
         self.inputs.append((round(self.ms, 3), what))
 
+    # A pad tapped from a script, which does not say how hard.
+    PAD_VELOCITY = 100
+
+    def _model_key(self, code, down):
+        dev = self.device
+        if code in dev.pads:
+            self.model_panel.pad(dev.pads[code],
+                                 self.PAD_VELOCITY if down else 0)
+        else:
+            pos = dev.wire_for(code)
+            if pos is None:
+                if not down:
+                    return
+                raise SessionError('button %r is not on the %s panel'
+                                   % (code, dev.name))
+            self.model_panel.key(pos[0], pos[1], down)
+        self.inputs.append((round(self.ms, 3), '%s %s' % (
+            'press' if down else 'release', code)))
+
     def press(self, code):
+        if self.model_panel is not None:
+            return self._model_key(code, True)
         pos = self.held.press(code)
         if pos is None:
             raise SessionError('button %r is not on the %s panel'
@@ -257,6 +282,8 @@ class Session:
         self._feed(panelin.encode_buttons(*pos), 'press %s' % code)
 
     def release(self, code):
+        if self.model_panel is not None:
+            return self._model_key(code, False)
         pos = self.held.release(code)
         if pos is not None:
             self._feed(panelin.encode_buttons(*pos), 'release %s' % code)
@@ -273,6 +300,11 @@ class Session:
             raise SessionError('encoder %r is not on the %s panel'
                                % (encoder, self.device.name))
         counts = detents * getattr(self.device, 'encoder_counts', 1)
+        if self.model_panel is not None and counts:
+            self.model_panel.turn(channel, counts)
+            self.inputs.append((round(self.ms, 3),
+                                'turn %s %+d' % (encoder, counts)))
+            counts = 0
         while counts:
             step = max(-127, min(127, counts))
             self._feed(panelin.encode_encoder(channel, step),

@@ -80,7 +80,8 @@ class Device:
                  labels=None, leds=None, page_leds=(), audio=None,
                  sysex_id=None, os_stream_id=None, card_ekfs=True,
                  panel_kind=None, encoder_counts=1, ddr_bytes=None,
-                 ui_card=None, straps=None):
+                 ui_card=None, straps=None, pads=None, encoder_labels=None,
+                 container_at=None):
         self.name = name
         self.short = short
         # [card] ekfs: whether the +Drive carries an ekFS sample volume that
@@ -147,6 +148,19 @@ class Device:
         # [boot] straps: GPIO bytes the board fixes, {address: value}, read
         # by the bootstrap (emu/bootrom.py BootHardware).
         self.straps = dict(straps or {})
+        # [boot] container_at: where in the SPI flash the bootstrap reads the
+        # OS container (emu/bootrom.py). None is the Digitakt's and
+        # Digitone's 0x80000; the Models' bootstrap reads it at 0x20000.
+        self.container_at = container_at
+        # [panel.pads]: velocity pads, button code -> the ADC channel the
+        # firmware reads it on (the Model:Cycles and Model:Samples; see
+        # emu/modelboard.py). A pad code is a button code with no wire
+        # position: the window presses it like a key.
+        self.pads = dict(pads or {})
+        # [panel.encoder_labels]: measured encoder names, rotation code ->
+        # name, for a product whose image has no name table the window can
+        # read. Empty keeps the firmware's own.
+        self.encoder_labels = dict(encoder_labels or {})
 
     def __repr__(self):
         return '<Device %s>' % self.name
@@ -253,7 +267,23 @@ def load(path):
         ddr_bytes=_ddr(raw.get('memory', {}), path),
         ui_card=_byte(raw.get('boot', {}), 'ui_card', path),
         straps=_straps(raw.get('boot', {}), path),
+        container_at=_flash_offset(raw.get('boot', {}), 'container_at', path),
+        pads=_pads(panel, path),
+        encoder_labels={int(k): str(v) for k, v in
+                        panel.get('encoder_labels', {}).items()},
     )
+
+
+def _pads(panel, where):
+    """-> [panel.pads] as {button code: ADC channel 0..7}."""
+    out = {}
+    for code, channel in (panel.get('pads') or {}).items():
+        if isinstance(channel, bool) or not isinstance(channel, int) \
+                or not 0 <= channel <= 7:
+            raise DeviceError('%s: [panel.pads] %s must be an ADC channel '
+                              '0..7, got %r' % (where, code, channel))
+        out[int(code)] = channel
+    return out
 
 
 def _straps(table, where):
@@ -271,6 +301,18 @@ def _straps(table, where):
                               % (where, key, value))
         out[addr] = value
     return out
+
+
+def _flash_offset(table, key, where):
+    """-> an optional offset into the 16 MB SPI flash, or None."""
+    value = table.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) \
+            or not 0 <= value < (16 << 20):
+        raise DeviceError('%s: [boot] %s must be an offset into the 16 MB '
+                          'flash, got %r' % (where, key, value))
+    return value
 
 
 def _byte(table, key, where):

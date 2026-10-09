@@ -118,16 +118,17 @@ import time
 import traceback
 
 APP_NAME = 'digiemu'
-APP_VERSION = '0.3.0'
+APP_VERSION = '0.4.0'
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Which devices have a panel in this version, and which module draws it.
 # A device file can exist (Digitakt II, Digitone II) without the first-run
 # recipe or a panel for it: those are named and refused.
-PANELS = {'dt1': 'emu.dtpanel', 'dn1': 'emu.dnpanel'}
+PANELS = {'dt1': 'emu.dtpanel', 'dn1': 'emu.dnpanel', 'mc': 'emu.mdpanel',
+          'ms': 'emu.mdpanel'}
 # How the refusals and the empty list name what this version runs.
-SUPPORTED = 'Digitakt (mk1) and Digitone (mk1)'
+SUPPORTED = 'Digitakt (mk1), Digitone (mk1), Model:Cycles and Model:Samples'
 
 STEPS = ('copy', 'extract', 'card', 'ladder', 'intro', 'settle')
 STEP_TITLES = {
@@ -156,13 +157,18 @@ CHECK_TITLES = {
 }
 CHECK_ROLES = {'baseline': 'Stock', 'build': 'Build', 'compare': ''}
 # Seconds per stage on the reference desktop, for the bar and the estimate.
-# Digitakt measured (2026-09-24); the Digitone's timed run is extrapolated
-# from its untimed one (the cycle clock runs about 64x slower than real time).
+# Digitakt measured (2026-09-24), the Models 2026-10-06; the Digitone's and
+# the Models' timed runs are extrapolated from their untimed ones (the cycle
+# clock runs about 64x slower than real time).
 CHECK_SECONDS = {
     'dt1': {'container': 1, 'prepare': 1, 'bootloader': 9, 'boot': 75,
             'run': 50, 'run-timed': 340, 'compare': 2},
     'dn1': {'container': 1, 'prepare': 1, 'bootloader': 13, 'boot': 150,
             'run': 90, 'run-timed': 540, 'compare': 2},
+    'mc': {'container': 1, 'prepare': 1, 'bootloader': 11, 'boot': 61,
+           'run': 53, 'run-timed': 360, 'compare': 2},
+    'ms': {'container': 1, 'prepare': 1, 'bootloader': 11, 'boot': 32,
+           'run': 51, 'run-timed': 350, 'compare': 2},
 }
 CHECK_REQUEST = 'request.json'
 CHECK_LOG = 'check.log'
@@ -427,15 +433,17 @@ def _fwcheck():
 
 
 def _panel_module(name='emu.dtpanel'):
-    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel), looked
-    up in sys.modules first like the others. The imports are spelled out,
-    not importlib'd, so the packaging scan (tests/test_packaging.py) sees
-    both and the bundle carries them."""
+    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel,
+    emu.mdpanel), looked up in sys.modules first like the others. The
+    imports are spelled out, not importlib'd, so the packaging scan
+    (tests/test_packaging.py) sees all three and the bundle carries them."""
     mod = sys.modules.get(name)
     if mod is not None:
         return mod
     if name == 'emu.dnpanel':
         from emu import dnpanel as mod
+    elif name == 'emu.mdpanel':
+        from emu import mdpanel as mod
     elif name == 'emu.dtpanel':
         from emu import dtpanel as mod
     else:
@@ -1707,10 +1715,10 @@ def _marked_incompatible(state, snap):
 
 
 def _run_panel(paths, b, snap, log, module='emu.dtpanel'):
-    """Run the device's panel (`module`, from PANELS: emu.dtpanel or
-    emu.dnpanel, which share main()'s arguments and codes) on `snap`, then
-    record in firmware.json what the session left behind. -> (the panel's
-    return code, incompatible?).
+    """Run the device's panel (`module`, from PANELS: emu.dtpanel,
+    emu.dnpanel or emu.mdpanel, which share main()'s arguments and codes) on
+    `snap`, then record in firmware.json what the session left behind.
+    -> (the panel's return code, incompatible?).
 
     'resume' is the card stamp resume.snap was saved against:
       - a clean exit that wrote resume.snap: the card as it is now;
@@ -3636,8 +3644,9 @@ def launcher(home=None):
 
 def _parser():
     ap = argparse.ArgumentParser(
-        prog=APP_NAME, description='Digitakt and Digitone emulator: the '
-                                   'portable app.')
+        prog=APP_NAME, description='Digitakt, Digitone, Model:Cycles and '
+                                   'Model:Samples emulator: the portable '
+                                   'app.')
     ap.add_argument('--home', metavar='DIR',
                     help='data folder (default: next to the exe; from source '
                          '$DIGIEMU_HOME or <repo>/portable)')

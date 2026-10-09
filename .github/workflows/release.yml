@@ -25,7 +25,9 @@ name: Release
 # placeholder to replace before publishing.
 #
 # A pull request that touches the build runs the same builds and keeps the
-# zip and the .dmg as workflow artifacts, without releasing anything.
+# zip and the .dmg as workflow artifacts, without releasing anything. Its app
+# is signed with the Developer ID when the secrets are there, but not
+# notarized: only a tag or a manual run waits on Apple's notary service.
 
 on:
   push:
@@ -151,7 +153,10 @@ jobs:
     # Apple silicon. setup-python's 3.12 is python.org's build (universal2,
     # with its own Tk); the spec makes an arm64-only app from it.
     runs-on: macos-15
-    timeout-minutes: 60
+    # notarytool waits up to an hour for each of two submissions (the app,
+    # then the .dmg). Apple usually answers in under a minute, but took 50 for
+    # the app on #19, and a 60-minute job cannot hold two slow ones.
+    timeout-minutes: 150
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -231,8 +236,14 @@ jobs:
         run: |
           args=(--python "$RUNNER_TEMP/venv/bin/python" --out "$RUNNER_TEMP/out" --version "$VERSION")
           if [ -n "$IDENTITY" ]; then
-            printf '%s\n' "$NOTARY_KEY_TEXT" > "$NOTARY_KEY"
-            args+=(--identity "$IDENTITY" --notarize)
+            args+=(--identity "$IDENTITY")
+            # Only what may be released is notarized: a tag, or a manual run.
+            # A pull request's build is still signed and checked; waiting on
+            # Apple for it bought nothing, and timed the job out on #19.
+            if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+              printf '%s\n' "$NOTARY_KEY_TEXT" > "$NOTARY_KEY"
+              args+=(--notarize)
+            fi
           fi
           bash tools/build-macos.sh "${args[@]}"
 
