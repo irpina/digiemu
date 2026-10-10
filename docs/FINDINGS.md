@@ -3285,6 +3285,14 @@ ring, advance DADDR with the same modulo, raise vector 154. That is
 exactly 8 times, the consume index advances 0 -> 8, and the bytes are enqueued
 onto the serial message queue at `0x47D9ADC0` (count 6 -> 8).
 
+The vector has to be raised as the hardware would, though: only while the
+CPU's mask is below its level (3 on the mk1s, INTC1 source 26), and at that
+level. Raised at a chunk boundary regardless, a feed lands in whatever the
+firmware is doing, and scripted knob input on the Digitone 1.44 arrived or
+not with the timing of the code under test **[D]**. `panelin.PanelIn` holds
+the bytes until the CPU would take the vector, as `emu/midi.py` does for
+MIDI in.
+
 TCD35 is the matching transmit channel; the ISR at `0x40001d00` (vector 180)
 is UART8 **transmit** only, pulling from a ring at `0x4094CD80`.
 

@@ -171,6 +171,11 @@ class Session:
         if self.sources:
             self.sources[0].ips = self.ips
             self.sources[0].align(pits.now)
+        # Panel input reaches the guest when the CPU would take it.
+        self.panel = panelin.PanelIn(on_feed=lambda whats: self.inputs.extend(
+            (round(self.now_ms(), 3), what) for what in whats))
+        self.panel.attach(m, self.profile)
+        self.sources += (self.panel,)
         self._t0 = pits.now
 
         # Frames, latched where emu/panel.py says [FRONT] is complete.
@@ -250,8 +255,7 @@ class Session:
 
     # -- input ------------------------------------------------------------------
     def _feed(self, data, what):
-        self.pc = panelin.feed(self.m, self.profile, bytes(data))
-        self.inputs.append((round(self.ms, 3), what))
+        self.panel.put(bytes(data), what)
 
     # A pad tapped from a script, which does not say how hard.
     PAD_VELOCITY = 100

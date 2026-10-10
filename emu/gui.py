@@ -323,8 +323,10 @@ class Emulator(threading.Thread):
                  save_on_exit=None, midi_name=None):
         super().__init__()
         # MIDI in through the DIN port (emu/midi.py): host messages queue
-        # here and reach the guest between chunks, like panel input.
+        # here and reach the guest on emulated time.
         self.midi_in = midi.MidiIn()
+        # Panel input waits for the CPU to take its interrupt (PanelIn).
+        self.panel_in = panelin.PanelIn()
         # The host side (virtual ports, and the devices the panel's MIDI
         # menu picks); MIDI out sends what the firmware writes to UART9.
         self.midi_host = None
@@ -482,10 +484,10 @@ class Emulator(threading.Thread):
             self.device_error = describe_error(exc)
 
     def _drain_input(self, m, profile, pc):
-        """Apply queued panel input at a chunk boundary. -> the new PC.
+        """Queue panel input at a chunk boundary for PanelIn. -> the PC.
 
         Everything delivered in one pass is encoded into ONE byte stream and
-        sent with a single feed, because the firmware's ISR drains the whole
+        queued as one, because the firmware's ISR drains the whole
         receive ring: one raised vector covers every message in it. Raising
         once per event would nest exception frames for input the ring
         already holds.
@@ -504,8 +506,8 @@ class Emulator(threading.Thread):
         delayed until its dwell elapses. --panel-dwell 0 disables all of
         this and restores the old drain-everything-every-chunk behaviour.
 
-        Returns the PC because delivering input raises a vector, which moves
-        it. Dropping the result would strand the run at the old address.
+        The PC is unchanged: PanelIn raises the vector, inside spin, when
+        the CPU would take it.
         """
         if self.held is None:
             return pc
@@ -566,17 +568,13 @@ class Emulator(threading.Thread):
         if took_button:                 # an encoder-only packet starts no dwell
             self._chunks_since_delivery = 0
             self._delivered_before = True
-        try:
-            new_pc = panelin.feed(m, profile, bytes(out))
-        except Exception as exc:                       # noqa: BLE001
-            self.stats['status'] = 'panel input failed: %s' % exc
-            return pc
+        self.panel_in.put(bytes(out))
         # Replayable: paste these into tools/guirun.py to reproduce the session.
         # stats['instrs'] is the count at this chunk boundary, before the next
-        # spin, which is exactly where guirun delivers a --feed.
+        # spin, which is exactly where guirun queues a --feed.
         print('[gui] input --feed %d:%s' % (self.stats['instrs'], bytes(out).hex()),
               flush=True)
-        return new_pc
+        return pc
 
     # A pad pressed from a window that does not say how hard.
     PAD_VELOCITY = 100
@@ -1056,6 +1054,7 @@ class Emulator(threading.Thread):
         # MIDI in rides the same instruction clock, byte by byte on emulated
         # time (MidiIn's docstring), rather than at chunk boundaries.
         self.midi_in.attach(m, pits.sources[0].ips)
+        self.panel_in.attach(m, profile)
         midi_events = ()
         if self.midi_out is not None:
             self.midi_out.attach(m, pits.sources[0].ips)
@@ -1122,7 +1121,8 @@ class Emulator(threading.Thread):
             budget = max(BUDGET, pits.sources[0].ips // 200)
             pc, executed, stop = spin(m, pc, budget, pits=pits, fast=self.fast,
                                       async_events=tuple(self._audio_sources)
-                                      + (self.midi_in,) + midi_events)
+                                      + (self.midi_in, self.panel_in)
+                                      + midi_events)
             if stop != 'limit':
                 self.stats['status'] = 'halted: %s' % stop
                 # Also to stdout: the status label is invisible to anyone

@@ -28,8 +28,11 @@ written down: `emu/serial.py` hardcoded Digitakt's and so did the wrong thing
 on Digitone in silence.
 """
 import struct
+import threading
 
 from unicorn.m68k_const import UC_M68K_REG_PC
+
+from emu.pit import PENDING_STEP, interrupt_level, render_holds, take_level
 
 # eDMA channel 34's live write pointer. A hardware register, so unlike every
 # driver address in this module it really is the same in both builds.
@@ -51,6 +54,17 @@ def _u32(m, addr):
     return struct.unpack('>I', m.uc.mem_read(addr, 4))[0]
 
 
+def write(m, profile, data):
+    """Put raw bytes in the receive ring and advance DADDR with the same
+    modulo the hardware applies, without raising the vector."""
+    base = _u32(m, profile.uart8_ring_ptr)
+    daddr = _u32(m, TCD34_DADDR)
+    for byte in data:
+        m.uc.mem_write(daddr, bytes([byte]))
+        daddr = base + (((daddr - base) + 1) & RING_MASK)
+    m.uc.mem_write(TCD34_DADDR, struct.pack('>I', daddr))
+
+
 def feed(m, profile, data):
     """Deliver raw bytes as the panel's DMA would. -> new PC.
 
@@ -59,15 +73,84 @@ def feed(m, profile, data):
     own ISR drains it. This is `emu/serial.py`'s mechanism -- proven there by
     the receive callback firing once per byte -- with the ring pointer
     resolved per build rather than hardcoded to Digitakt's.
+
+    It raises the vector now, whatever the CPU's mask: a tool's shortcut at a
+    chunk boundary. A running session delivers through `PanelIn` instead.
     """
-    base = _u32(m, profile.uart8_ring_ptr)
-    daddr = _u32(m, TCD34_DADDR)
-    for byte in data:
-        m.uc.mem_write(daddr, bytes([byte]))
-        daddr = base + (((daddr - base) + 1) & RING_MASK)
-    m.uc.mem_write(TCD34_DADDR, struct.pack('>I', daddr))
+    write(m, profile, data)
     m.raise_vector(RX_VECTOR)
     return m.uc.reg_read(UC_M68K_REG_PC)
+
+
+class PanelIn:
+    """Panel bytes from the host, delivered when the CPU would take vector
+    154: a longrun.spin event source, as MidiIn is.
+
+    The hardware holds the UART's interrupt back while the CPU's mask is at
+    or above its level (3 on the mk1s) and raises it as the mask drops.
+    Raised at a chunk boundary regardless, a feed could land in one of the
+    firmware's critical sections and lose the input after it; and since
+    where a boundary falls moves with the code's timing, scripted input
+    arrived or not with the build. Here a byte waits for its interrupt to be
+    taken, within PENDING_STEP instructions (core cycles under cftiming's
+    stepper) of the mask dropping, or at the end of the audio render that
+    holds it (pit.render_holds).
+
+    `put` may be called from any thread; `on_feed(whats)` runs on the
+    emulator's, with the `what` of each put delivered.
+    """
+
+    def __init__(self, on_feed=None):
+        self.m = self.profile = None
+        self.on_feed = on_feed
+        self._lock = threading.Lock()
+        self._pending = bytearray()
+        self._whats = []
+        self.delivered = self.deferred = 0
+
+    def attach(self, m, profile):
+        self.m, self.profile = m, profile
+
+    def put(self, data, what=None):
+        with self._lock:
+            self._pending += data
+            if what is not None:
+                self._whats.append(what)
+
+    @property
+    def pending(self):
+        return len(self._pending)
+
+    def step(self, done, remaining=None):
+        """longrun.spin: instructions until a boundary is wanted, or None."""
+        if self.m is None or not self._pending:
+            return None
+        level = interrupt_level(self.m, RX_VECTOR)
+        if level is None:
+            return None             # not armed: offered at every boundary
+        if take_level(self.m, RX_VECTOR) is not None:
+            return 1                # taken at the next boundary
+        if render_holds(self.m, done, level):
+            return remaining
+        return PENDING_STEP
+
+    def service(self, done):
+        """longrun.spin: write what is pending and raise vector 154, if the
+        CPU would take it now. -> True if raised."""
+        if self.m is None or not self._pending:
+            return False
+        level = take_level(self.m, RX_VECTOR)
+        if level is None:
+            self.deferred += 1
+            return False
+        with self._lock:
+            data, self._pending = bytes(self._pending), bytearray()
+            whats, self._whats = self._whats, []
+        write(self.m, self.profile, data)
+        self.delivered += len(data)
+        if self.on_feed is not None:
+            self.on_feed(whats)
+        return self.m.raise_vector(RX_VECTOR, level=level)
 
 
 def encode_buttons(channel, mask):
