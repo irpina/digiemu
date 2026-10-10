@@ -222,10 +222,11 @@ uv run python -m emu.portable              # the app, with its data in portable/
 uv run python -m emu.portable --add Digitakt_OS1.53.syx   # or set up without the window
 ```
 
-The emulator does not run without the patched Unicorn. Of the six patches in
-[patches/](patches/README.md), three fix how Unicorn emulates the ColdFire's
-flags and its multiply-accumulate unit, and three make it fast enough for
-live audio.
+The emulator does not run without the patched Unicorn. Of the seven patches
+in [patches/](patches/README.md), three fix how Unicorn emulates the
+ColdFire's flags and its multiply-accumulate unit, three make it fast enough
+for live audio, and one keeps Apple silicon and other aarch64 hosts from
+crashing on a constant subtraction.
 
 To work on the emulator itself (the panel on its own, the boot tools, the
 tracing tools), start with [DIGITAKT-MK1.md](DIGITAKT-MK1.md);

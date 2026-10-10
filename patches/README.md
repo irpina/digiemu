@@ -1,6 +1,6 @@
 # Patches
 
-Six diffs against [Unicorn Engine](https://github.com/unicorn-engine/unicorn)
+Seven diffs against [Unicorn Engine](https://github.com/unicorn-engine/unicorn)
 2.1.4, tag commit `8028ec436f2d9376525352dd38ed9ed6b9f6be10`, applied in this
 order, each against the tree with the ones before it applied:
 
@@ -18,15 +18,19 @@ order, each against the tree with the ones before it applied:
 - `unicorn-2.1.4-m68k-digikit-speed.patch` touches `include/uc_priv.h`,
   `qemu/accel/tcg/cpu-exec.c` and `cputlb.c`, `qemu/target/m68k/helper.c`,
   `helper.h` and `translate.c`, `qemu/tcg/tcg-op.c`, and appends to `uc.c`.
+- `unicorn-2.1.4-tcg-aarch64-addsub2.patch` touches
+  `qemu/tcg/aarch64/tcg-target.inc.c`.
 
 The first three are correctness fixes, and the emulator refuses to run
-without them. The last three are speed: they are what make live audio on the
+without them. The next three are speed: they are what make live audio on the
 mk1 run faster than real time. Without fast-mem and accel the emulator takes
 the same code paths in Python, with byte-identical audio but about nine times
 slower: two emulated seconds of 48 kHz audio from the loaded-sample snapshot
 took 11.3 s of wall time instead of 1.26 s (WSL, 2026-09-23). The speed patch
 is optional in the same way: without it the audio and CPU state are the same
-byte for byte, at about two thirds of the speed.
+byte for byte, at about two thirds of the speed. The seventh is a correctness
+fix for aarch64 hosts (Apple silicon, Linux on Arm) and changes nothing on
+others.
 
 Everything except the `uc.c` additions is QEMU source vendored inside
 Unicorn. **The patches are
@@ -172,6 +176,26 @@ seconds of a playing pattern, audio and CPU state were byte-identical to the
 five-patch library at 2.76x to 2.83x real time instead of 1.82x to 1.97x
 (WSL, 2026-09-23).
 
+## What the aarch64 patch fixes
+
+On an aarch64 host, Unicorn's code generator emits an invalid instruction for
+a `sub2` whose low operand is a nonzero constant, and the process dies with
+SIGILL the first time that block runs. `tcg_out_addsub2` picks SUBS for a
+subtraction of a positive constant and also negates the constant, so the
+negative immediate spills into the encoding. QEMU fixed it in 707b45a247
+("tcg/aarch64: Fix constant subtraction in tcg_out_addsub2", QEMU 6.0), which
+Unicorn's QEMU predates; the patch is that hunk. Unicorn issue
+[#2430](https://github.com/unicorn-engine/unicorn/issues/2430).
+
+An m68k `subx` reaches it when its source register and the X flag are both
+constants in the block, as in gcc's code for `((uint64_t)1 << n) - 1`:
+
+    suba.l %a1,%a1; move.l %a1,%d5; clr.l %d6; subq.l #1,%d5; subx.l %d6,%d4
+
+A code hook on the block, or a `count=` step, stops the constants from
+reaching the `sub2`, so the crash comes and goes with how the block is run.
+The code is legal ColdFire, and x86_64 hosts run it correctly.
+
 ## Checks
 
 `emu/unicorn_compat.py` exercises the CCR shapes, the `0x400db9e0`
@@ -180,7 +204,10 @@ interpreter whose Unicorn lacks any of the patches, rather than letting a
 subtly wrong emulation pass for a working one. `tests/test_unicorn_emac.py`
 checks the MAC and MSAC load forms, fractional and integer modes and mode
 switches against the manual. The speed options are not required, so the
-compat check does not test them; `tests/test_unicorn_speed.py` does.
+compat check does not test them; `tests/test_unicorn_speed.py` does. Nor
+does it test the aarch64 fix: without it the process dies rather than
+emulating wrongly, so a probe would have to run in a child process at every
+start. `tests/test_unicorn_aarch64.py` runs the `subx` case in one.
 
 ## Applying them
 
