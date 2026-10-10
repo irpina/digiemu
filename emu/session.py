@@ -33,6 +33,13 @@ Options that change what is measured:
                 under the DDR model it was saved with.
   on_machine    a callable(session) run once the machine is built and
                 before it runs, for probes.
+  fast_idle=True
+                end a step where the firmware reaches an idle spin and
+                credit the rest as spent spinning, as the window does
+                (longrun.build). Every pass of the spin is otherwise a
+                Python call; a run is then 3-5x faster and still the same
+                from run to run, but not the default's instruction stream
+                (the audio differs). The cycle clock (timing=) ignores it.
 """
 import os
 
@@ -78,7 +85,7 @@ class SessionError(RuntimeError):
 class Session:
     def __init__(self, snapshot, syx=None, *, audio=True, hle=True,
                  timing=None, strict=None, ddr=None, on_machine=None,
-                 verbose=False):
+                 verbose=False, fast_idle=False):
         self.snapshot = snapshot
         self.syx = config.firmware(syx)
         self.verbose = verbose
@@ -123,7 +130,7 @@ class Session:
         m, ev, st, pc, inq, at = longrun.build(
             snapshot, syx=self.syx, unblock=True, softfloat=hle, bitmap=hle,
             dsp=True, unblock_except=intro_except,
-            deferred_components=('timers',), fast_idle=False,
+            deferred_components=('timers',), fast_idle=fast_idle,
             manifest_relax=relax, ddr=ddr, **audio_kw)
         self.m, self.ev, self.st, self.pc, self.at = m, ev, st, pc, at
 
