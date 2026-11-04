@@ -39,6 +39,7 @@ import os
 from emu import (audioout, config, device as devices, edma_sw, intfrc,
                  longrun, panel, panelin, symbols)
 from emu.dtim import Dtims, Timers
+from emu.harness import UC_M68K_REG_PC
 from emu.pit import INSTR_PER_SEC, Pits, intro_running
 
 # Input and bookkeeping happen between steps of this many emulated ms.
@@ -220,9 +221,13 @@ class Session:
 
     def _chunk(self, ms):
         budget = max(1, int(ms * self.ips / 1000))
+        # Resume from the PC register, not the last chunk's pc: an exception
+        # raised between chunks (MidiIn.deliver from a probe) moved it to the
+        # handler, and resuming at the old pc dropped the handler and left its
+        # frame on the stack. After a normal chunk the two are the same.
         pc, executed, stop = longrun.spin(
-            self.m, self.pc, budget, pits=self.pits, fast=self.stepper,
-            async_events=self.sources)
+            self.m, self.m.uc.reg_read(UC_M68K_REG_PC), budget,
+            pits=self.pits, fast=self.stepper, async_events=self.sources)
         self.pc = pc
         if stop != 'limit':
             self.halted = '%s at pc=0x%08x' % (stop, pc)
