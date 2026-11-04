@@ -167,8 +167,9 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     them, so turning them on does not regress the previously-working build.
     Pass sdgate=False and/or esdhc=False for the old unmodelled-storage
     behaviour.
-    machine_out: if given, receives 'm' (the Machine) and 'st' (the stats
-    dict) before emu_start is called, so a pre_start hook can see both.
+    machine_out: if given, receives 'm' (the Machine), 'st' (the stats
+    dict) and 'profile' (the image's symbols) before emu_start is called,
+    so a pre_start hook can see them.
     coverage=False (fast path only) leaves out the global per-instruction
     hook that counts instructions and records coverage: st['n'], 'seen',
     'curve' and 'stall_pcs' then stay empty and extra_hook is never called.
@@ -411,6 +412,7 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         # pre_start hook timestamp itself against it while the run is in
         # progress, not just after emu_start returns.
         machine_out['st'] = st
+        machine_out['profile'] = profile
         machine_out['start_pc'] = start_pc
     if pre_start:                 # add extra Unicorn hooks before execution starts
         pre_start(m)

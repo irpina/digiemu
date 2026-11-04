@@ -1277,14 +1277,22 @@ def cold_boot(paths, progress=None, cancel=None, *, chunk=None, limit=None,
     this boot never delivers. That point is found, not fixed, so a firmware
     that parks somewhere else still stops in the right place. Instruction
     counts under the budget are longrun's blocks x PER_BLOCK estimate.
-    Without the native budget it falls back to counted chunks (slower, same
-    rule). The cold boot's own card writes (the mount's inode chunk) are
-    then flushed into the card: every snapshot from here on has them in
-    RAM, and a card without them would disagree with its own snapshots. On
-    failure or cancel nothing is flushed. StepFailed if the emulator stops,
-    a vector has no handler, or it never parks within `limit`.
+
+    A patched firmware may idle in a loop of its own instead of a spin
+    (elekloader's ev_idle). Under the native budget each chunk then runs in
+    slices of emu.idletick.EVERY blocks, and the CPU is sampled after each
+    one: found in that loop it gets the spin's reschedule, and an idle
+    sample counts its slice as spin passes (emu/idletick.py says what idle
+    means). A stock image is never found there, so it runs and parks as
+    before. Without the native budget it falls back to counted chunks
+    (slower, same rule, one sample a chunk). The cold boot's own card
+    writes (the mount's inode chunk) are then flushed into the card: every
+    snapshot from here on has them in RAM, and a card without them would
+    disagree with its own snapshots. On failure or cancel nothing is
+    flushed. StepFailed if the emulator stops, a vector has no handler, or
+    it never parks within `limit`.
     """
-    from emu import dspboot, native
+    from emu import dspboot, idletick, native
     from emu.longrun import _FastStepper
     from emu.harness import UC_M68K_REG_PC
     chunk = COLD['chunk'] if chunk is None else chunk
@@ -1314,33 +1322,48 @@ def cold_boot(paths, progress=None, cancel=None, *, chunk=None, limit=None,
         pc = box['start_pc']
         budget = native.NativeBudget(m.uc) if native.budget_available(m.uc) \
             else None
+        tick = None
+        if box.get('profile') is not None:
+            tick = idletick.IdleTick.install(m, box['profile'], len(img),
+                                             dspboot.MAIN_LOAD)
         per_block = _FastStepper.PER_BLOCK
         blocks = max(1, int(chunk / per_block))
         done, stop = 0, None
         while done < limit:
             _check_cancel(cancel)
             spins, tasks = st['spin'], len(st['task_create_hits'])
-            m.halt_vec = None
-            try:
-                if budget is not None:
-                    budget.state.left = blocks
-                    m.uc.emu_start(pc, 0)
-                    units = blocks
-                else:
-                    m.uc.emu_start(pc, 0, count=chunk)
-                    units = chunk
-            except dspboot.UcError as exc:
-                raise StepFailed('ladder', 'the cold boot stopped after %dM '
-                                 'instructions: %s'
-                                 % (done // 1_000_000, exc)) from exc
-            pc = m.uc.reg_read(UC_M68K_REG_PC)
-            if m.halt_vec is not None:
-                raise StepFailed('ladder', 'unhandled vector %d at %#010x '
-                                 'during the cold boot' % (m.halt_vec, pc))
+            if budget is not None:
+                units = blocks
+                parts = [tick.every] * (blocks // tick.every) if tick else []
+                parts += [blocks - sum(parts)] if blocks > sum(parts) else []
+            else:
+                units = chunk
+                parts = [chunk]
+            looped = 0
+            for part in parts:
+                m.halt_vec = None
+                try:
+                    if budget is not None:
+                        budget.state.left = part
+                        m.uc.emu_start(pc, 0)
+                    else:
+                        m.uc.emu_start(pc, 0, count=part)
+                except dspboot.UcError as exc:
+                    raise StepFailed('ladder', 'the cold boot stopped after '
+                                     '%dM instructions: %s'
+                                     % (done // 1_000_000, exc)) from exc
+                pc = m.uc.reg_read(UC_M68K_REG_PC)
+                if m.halt_vec is not None:
+                    raise StepFailed('ladder', 'unhandled vector %d at %#010x '
+                                     'during the cold boot'
+                                     % (m.halt_vec, pc))
+                if tick is not None and tick.sample() == 'idle':
+                    looped += part
+                pc = m.uc.reg_read(UC_M68K_REG_PC)
             done += chunk
             emit('tick', done=done, total=COLD_EXPECTED,
                  fraction=min(done / COLD_EXPECTED, 0.99))
-            idle = st['spin'] - spins > units // idle_fraction
+            idle = st['spin'] - spins + looped > units // idle_fraction
             if idle and len(st['task_create_hits']) == tasks:
                 stop = 'parked'
                 break
