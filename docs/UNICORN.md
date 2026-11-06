@@ -2,9 +2,10 @@
 
 The emulator requires `unicorn==2.1.4` with the patches in `patches/`: three
 correctness fixes it refuses to run without (the two below and the EMAC
-modes fix) and three speed patches it uses when present (fast memory, the
-digikit accelerators and speed options). `patches/README.md` describes
-all six.
+modes fix), three speed patches it uses when present (fast memory, the
+digikit accelerators and speed options), and a fix for aarch64 hosts, where
+stock Unicorn emits an invalid instruction for a constant subtraction and
+dies with SIGILL. `patches/README.md` describes all seven.
 
 The m68k CCR patch, `unicorn-2.1.4-m68k-hook-ccr-sync.patch`: stock Unicorn
 both mutates lazy condition-code state when the host reads SR and leaves lazy
