@@ -259,7 +259,9 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     if ssi0_legacy_upgrade and ssi0_request_hz is None:
         raise ValueError('SSI0 legacy upgrade requires an explicit request rate')
     syx = config.firmware(syx)
-    flash = db.build_flash(syx)
+    # Writable, and on `ev`: an OS upgrade writes the flash through the OS's
+    # own SPI driver (emu/osupgrade.py), and later reads must see it.
+    flash = bytearray(db.build_flash(syx))
     # This is intentionally bounded data, not the hook closures themselves.
     # A stateful checkpoint may only resume under the same hook topology.
     checkpoint_manifest = {
@@ -292,7 +294,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           # Uses of the host stand-ins that are not firmware behaviour, for
           # emu/strict.py's report: the flash-read shortcut, the completion
           # semaphore patch, the idle-loop reschedule.
-          'stand_ins': collections.Counter()}
+          'stand_ins': collections.Counter(),
+          'flash': flash}
     inq = collections.deque(send)
     with open(config.main_image(), 'rb') as fh:
         main_img = fh.read()
@@ -390,7 +393,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         ret, off, ln, dest = struct.unpack('>IIII', uc.mem_read(sp, 16))
         if ln and dest and off + ln <= len(flash):
             for p in range(0, ln + 0x100000, 0x100000): m.ensure(dest + p)
-            uc.mem_write(dest, flash[off:off + ln])
+            uc.mem_write(dest, bytes(flash[off:off + ln]))
         uc.reg_write(UC_M68K_REG_D0, 0); uc.reg_write(UC_M68K_REG_A7, sp + 4)
         uc.reg_write(UC_M68K_REG_PC, ret)
 

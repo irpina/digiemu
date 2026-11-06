@@ -593,8 +593,12 @@ UPDATER_ID, UPDATER_IMAGE = 4, 0x80000408
 def boot(syx_path, bootstrap_section, main_image, *, ddr=128 * MB,
          limit=400_000_000, chunk=2_000_000, on_machine=None, trace=None,
          mode=0, held=None, ui_card=4, straps=None, groups=6,
-         container_at=CONTAINER_AT):
+         container_at=CONTAINER_AT, flash=None):
     """Run the bootstrap from its reset vector until it jumps into DDR.
+
+    `flash`, when given, is the whole flash image to boot from (one an OS
+    upgrade wrote, emu/osupgrade.py) instead of the one `syx_path` would
+    leave; the updater then comes from the container in it.
 
     The bootstrap loads the updater (section id 4) over itself in SRAM and
     calls it; the updater is a small RTOS whose tick is PIT0, so the PITs
@@ -618,7 +622,12 @@ def boot(syx_path, bootstrap_section, main_image, *, ddr=128 * MB,
     skipped = wdebug_sites(image, BOOT_LINK)
     step_over(m, skipped)
     m.install_isa_patches_scoped(image, BOOT_LINK)
-    updater = container_section(syx_path, UPDATER_ID)
+    if flash is None:
+        updater = container_section(syx_path, UPDATER_ID)
+    else:
+        from emu import osupgrade
+        updater = osupgrade.section(
+            osupgrade.container_from_flash(flash, container_at), UPDATER_ID)
     upd_image = updater[8:] if updater else b''
     if upd_image:
         m.install_isa_patches_scoped(upd_image, UPDATER_IMAGE)
@@ -631,7 +640,8 @@ def boot(syx_path, bootstrap_section, main_image, *, ddr=128 * MB,
                 skipped.extend(upd_wdebug)
             m.uc.hook_add(UC_HOOK_CODE, patch_updater, begin=upd_entry,
                           end=upd_entry)
-    flash = SpiFlash(flash_image(syx_path, container_at=container_at))
+    flash = SpiFlash(flash_image(syx_path, container_at=container_at)
+                     if flash is None else flash)
     # The flash answers on PCS1: every frame the bootstrap sends selects it.
     dspi = Dspi(m, devices={FLASH_PCS: flash})
     hw = BootHardware(m, straps=straps)
