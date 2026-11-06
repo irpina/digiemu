@@ -219,6 +219,15 @@ def interrupt_level(m, vec, respect_mask=True):
     return None if masked else icr
 
 
+def take_level(m, vec):
+    """-> the level the CPU would take `vec` at now, or None (not armed,
+    masked in the INTC, or at or below the CPU's mask)."""
+    level = interrupt_level(m, vec)
+    if level is None or (m.uc.reg_read(UC_M68K_REG_SR) >> 8) & 7 >= level:
+        return None
+    return level
+
+
 def intro_running(m, intro_isr):
     """-> True while the intro still owns PIT3.
 

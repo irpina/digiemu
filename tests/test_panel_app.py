@@ -1268,14 +1268,13 @@ class EncoderScaleTest(Quiet):
             device=types.SimpleNamespace(encoder_channel=lambda code: code - 1,
                                          encoder_counts=counts))
         sent = []
-        with mock.patch.object(panelin, 'feed',
-                               lambda m, prof, data: sent.append(data) or 0x1234):
-            pc = gui.Emulator._drain_input(emu, None, None, 0x40)
+        emu.panel_in = types.SimpleNamespace(put=sent.append)
+        pc = gui.Emulator._drain_input(emu, None, None, 0x40)
         return pc, sent, panelin
 
     def test_a_detent_is_four_counts(self):
         pc, sent, panelin = self.drain(('encoder', 1, 3), ('encoder', 9, -1))
-        self.assertEqual(pc, 0x1234)
+        self.assertEqual(pc, 0x40)          # queued: PanelIn raises the vector
         self.assertEqual(sent, [panelin.encode_encoder(0, 12)
                                 + panelin.encode_encoder(8, -4)])
 

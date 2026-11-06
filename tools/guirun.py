@@ -412,6 +412,10 @@ def main():
     pits, restored_timers = restore_or_construct_timers(
         ev, lambda: construct_timers(m, args, intro), args.ips)
     ssi0 = ev.get('ssi0_dma')
+    # Panel input waits for the CPU to take its interrupt, as in the GUI.
+    panel_in = panelin.PanelIn()
+    panel_in.attach(m, profile)
+    events = ((ssi0,) if ssi0 is not None else ()) + (panel_in,)
     if ssi0 is not None:
         if ssi0._checkpoint_restored and ssi0.now != pits.now:
             raise RuntimeError('SSI0 and timer checkpoint clocks disagree')
@@ -459,7 +463,7 @@ def main():
     at(0x4012d2fa, terminal_hit)
 
     def drain_input(pc):
-        """Apply queued panel input at a chunk boundary. -> the new PC.
+        """Queue panel input at a chunk boundary for panel_in. -> the PC.
 
         Ported line for line from emu/gui.py's Emulator._drain_input; see its
         docstring there for the pacing rationale.
@@ -503,13 +507,9 @@ def main():
             return pc
         chunks_since_delivery = 0
         delivered_before = True
-        try:
-            new_pc = panelin.feed(m, profile, bytes(out))
-        except Exception as exc:                        # noqa: BLE001
-            print('[guirun] panel input failed: %s' % exc)
-            return pc
+        panel_in.put(bytes(out))
         print('[guirun] input ~%.1fM: %s' % (state['instrs'] / 1e6, bytes(out).hex()))
-        return new_pc
+        return pc
 
     latched: dict[str, Any] = {'buf': None, 'clock': None}
     if profile.panel_diff is not None and profile.fb_front is not None:
@@ -695,7 +695,7 @@ def main():
             [e for e in pending_feeds if e[0] <= state['instrs']],
             [e for e in pending_feeds if e[0] > state['instrs']])
         for when, data in due_feeds:
-            pc = panelin.feed(m, profile, data)
+            panel_in.put(data)
             print('[guirun] input --feed %d:%s (asked %d)'
                   % (state['instrs'], data.hex(), when))
         ready, pending_inputs[:] = (
@@ -706,7 +706,7 @@ def main():
         pc = drain_input(pc)
         pc, executed, stop = spin(
             m, pc, BUDGET, pits=pits, fast=fast,
-            async_events=(ssi0,) if ssi0 is not None else (),
+            async_events=events,
         )
         state['instrs'] += executed
         due, pending_pngs[:] = (
@@ -766,7 +766,7 @@ def main():
         if state['terminal']:
             pc, executed, stop = spin(
                 m, pc, BUDGET, pits=pits, fast=fast,
-                async_events=(ssi0,) if ssi0 is not None else (),
+                async_events=events,
             )
             state['instrs'] += executed
             break
