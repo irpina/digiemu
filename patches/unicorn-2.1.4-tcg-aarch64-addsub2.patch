@@ -1,0 +1,21 @@
+diff --git a/qemu/tcg/aarch64/tcg-target.inc.c b/qemu/tcg/aarch64/tcg-target.inc.c
+index 50c9e59..5fd5b11 100644
+--- a/qemu/tcg/aarch64/tcg-target.inc.c
++++ b/qemu/tcg/aarch64/tcg-target.inc.c
+@@ -1466,11 +1466,13 @@ static inline void tcg_out_addsub2(TCGContext *s, TCGType ext, TCGReg rl,
+     }
+ 
+     if (const_bl) {
+-        insn = I3401_ADDSI;
+-        if ((bl < 0) ^ sub) {
+-            insn = I3401_SUBSI;
++        if (bl < 0) {
+             bl = -bl;
++            insn = sub ? I3401_ADDSI : I3401_SUBSI;
++        } else {
++            insn = sub ? I3401_SUBSI : I3401_ADDSI;
+         }
++
+         if (unlikely(al == TCG_REG_XZR)) {
+             /* ??? We want to allow al to be zero for the benefit of
+                negation via subtraction.  However, that leaves open the
