@@ -854,7 +854,11 @@ SYMBOLS = [
                          # sequence with d0/d1 where that has d1/d4. Masked:
                          # the pea and lea operands and the high half of the
                          # jsr's; anchored on the PIT3-off store.
-                         Sig(H(34, '4-7,14-17,32-33', '18:33c0fc08', 'db80fceb41c3835b0d3fa82a3c57244d'))),
+                         Sig(H(34, '4-7,14-17,32-33', '18:33c0fc08', 'db80fceb41c3835b0d3fa82a3c57244d')),
+                         # Digitakt mk1 1.54: the 1.53 sequence at the same
+                         # address, but frame_sem moved, so the Fixed verify
+                         # above fails. Masked: the pea and lea operands.
+                         Sig(H(24, '4-7,14-17', '8:42417810', 'e07daa5589cdc842e1e441455f693ce4'))),
      False),
 
     # The `pea` operand at intro_done+4 is the frame semaphore's MUTEX
@@ -1341,6 +1345,50 @@ SYMBOLS = [
     # `python -m emu.symbols` reports it and every caller has one place to
     # get it from.
     ('idle_spins', ScanAll('60fe', step=2), False),
+
+    # ----------------------------------------------------------------
+    # USB MIDI, at the class driver's edges (emu/usbmidi.py). Found on
+    # Digitone 1.43 from the USB controller's endpoint-prime register and
+    # checked at the same addresses on 1.44. The Digitakt mk1 (1.54) has the
+    # same driver: every symbol here resolves on it too.
+    #
+    # usb_midi_send(len, ptr) packs a MIDI byte stream into USB-MIDI event
+    # packets for the bulk IN endpoint; usb_midi_send_short(len, ptr) sends
+    # one realtime or program-change message. usb_rx_done is the bulk OUT
+    # endpoint's completion callback: it posts (usb_midi_parse, len, buf) to
+    # the deferred-call queue through usb_defer, the jsr at +0x1a.
+    # usb_midi_parse unpacks the packets by cable and code index and calls
+    # each cable's input handler; it ends by handing the buffer back through
+    # usb_rx_release. usb_midi_short_ring is the short sender's 32-byte
+    # packet ring in the USB DMA area, the operand at +0x42.
+    # ----------------------------------------------------------------
+    ('usb_midi_send', Sig(H(24, '20-23', '2:ffe47201', 'a7fddefd1800536fc9dc0e3d0fbcba09'),
+                          hi=DATA_HI), False),
+    ('usb_midi_send_short', Sig(H(24, '8-11', '15:9c2039fc', '3d16be5117d37c12b0c63c961d98e753'),
+                                hi=DATA_HI), False),
+    ('usb_midi_short_ring', Operand('usb_midi_send_short', at=0x42), False),
+    ('usb_rx_done', Sig(H(24, '10-13', '6:000853b9', '3fc5414065c77a10ef9f81d8f13797e8'),
+                        hi=DATA_HI), False),
+    ('usb_defer', Operand('usb_rx_done', at=0x1c), False),
+    ('usb_midi_parse', Sig(H(24, '14-17,20-23', '3:a048d70c', '4410073a3bbcf7bff102055b62231fa6'),
+                           hi=DATA_HI), False),
+    # usb_rx_release: the buffer's offset into the USB DMA area (the subi
+    # operand) is masked, as the Digitakt mk1 places that area elsewhere.
+    # Matches Digitone 1.43, 1.44 and Digitakt 1.54.
+    ('usb_rx_release', Sig(H(24, '8-11', '0:7009222f', '2e5743ec2ab67b33ec88c84aef67ea0d')), False),
+    # The Elektron screenshot request (RPC 0x04) hands a copy of the screen to
+    # the display task and, unless the copy is already done, waits for it on
+    # a semaphore the copy then posts: rpc_screen_wait is the done-flag test
+    # before that wait, rpc_screen_sem the semaphore (its `pea` at +8).
+    # The next instruction's frame offset is masked too (the Digitakt mk1
+    # frame is 8 bytes bigger). Matches Digitone 1.43, 1.44 and Digitakt 1.54.
+    ('rpc_screen_wait', Sig(H(24, '8-11,14-17,22-23', '2:ffb8660e', 'b0c663454804821cc2bb4d100b7a3f21'),
+                            hi=DATA_HI), False),
+    ('rpc_screen_sem', Operand('rpc_screen_wait', at=8), False),
+    # sem_init(sem, count) sits just before pend_b in the RTOS, as on the
+    # Digitone 1.43 and 1.44 images: it stores the count and clears the
+    # wait list.
+    ('sem_init', Offset('pend_b', -0x0e), False),
 ]
 
 _NAMES = {name for name, _, _ in SYMBOLS}
