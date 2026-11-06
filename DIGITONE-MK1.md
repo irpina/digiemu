@@ -190,12 +190,52 @@ On the reference desktop, OS 1.43:
 | DSP thread | ~80% of a second core |
 | Output, factory pattern | RMS ~1.8k, peak ~6.7k (16-bit), silent at idle |
 
+## USB MIDI
+
+The USB controller is not modelled, but the firmware's USB MIDI port is,
+at the edges of its USB MIDI class driver (`emu/usbmidi.py`):
+
+- **In.** On the unit, the USB interrupt hands each finished bulk OUT
+  transfer (4-byte USB-MIDI event packets) to the OS's deferred-call queue,
+  and a task then unpacks it by cable and code index into the cable's MIDI
+  input. The emulator makes that same post, with packets built from the
+  host's bytes: up to 128 packets (one 512-byte transfer) a post, up to
+  four posts waiting at once, from the idle task and from the unpacking
+  task as it hands a buffer back.
+- **Out.** The two USB MIDI senders return at once on a unit that no host
+  has configured, so their entries are caught and the bytes go to the host.
+
+Elektron's SysEx requests (the protocol Transfer and elkflash use) are
+answered: ping, version, limits, screenshots. Two things made them work
+under `unblock`, which fakes waits that would block:
+
+- The requests hand work to another task and wait for it on a semaphore
+  made at run time. Faked, such a wait returns before the work is done (a
+  blank screenshot, "Could not initiate OS upgrade"). Every semaphore set up
+  after the snapshot opens is therefore a real one; the waits `unblock`
+  exists for, on hardware the emulator lacks, are all set up during boot.
+- The settled snapshots hold a count of 1 on the screenshot's semaphore with
+  nobody waiting, left by the emulated boot. On a unit that count would make
+  every screenshot blank, so it is set back to 0.
+
+There is no window for this yet: `tools/usbrun.py` runs a snapshot headless
+and serves the port as a TCP byte stream (127.0.0.1:7311), and
+`tools/usbmidi_relay.py` joins it to two MIDI ports on the host, "dn-emu
+usb in" (to the emulator) and "dn-emu usb out". On Windows, make those two
+in loopMIDI. Then, for example:
+
+```sh
+python -m elkflash info --in-port "dn-emu usb out" --out-port "dn-emu usb in"
+```
+
 ## Known limits
 
 - **Digitone Keys.** Boot argument bit 19 (at 0x402292f0) selects the Keys
   behaviour, and the emulator passes 0. The Keys' extra controls (a 37-key
   keyboard on panel tags 5 and 6, the wheels on the main CPU's ADC, and codes
   55–72) are not in the device file or the window.
+- **The USB controller** is not modelled: no host enumerates the unit, so
+  there is no Overbridge or USB audio, and USB MIDI is the stand-in above.
 - **Audio in and the FPGA** are not modelled beyond what boot needs. MIDI
   through the DIN port (UART9, eDMA channels 36 and 37) is: see
   `emu/midi.py`.
@@ -216,3 +256,7 @@ On the reference desktop, OS 1.43:
 | `emu/panelleds.py` | the LED stream; the Digitone's seed addresses |
 | `emu/edma_sw.py` | eDMA, including SSRT starts (channel 47) |
 | `tests/test_dsplink.py` | the DSP model on a synthetic section 7, no firmware |
+| `emu/usbmidi.py` | USB MIDI in and out, and the TCP link |
+| `tools/usbrun.py` | a snapshot run headless with the USB MIDI link |
+| `tools/usbmidi_relay.py` | the link's host end: two MIDI ports |
+| `tests/test_usbmidi.py` | event packets and the post, no firmware |

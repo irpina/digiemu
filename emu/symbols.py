@@ -1341,6 +1341,44 @@ SYMBOLS = [
     # `python -m emu.symbols` reports it and every caller has one place to
     # get it from.
     ('idle_spins', ScanAll('60fe', step=2), False),
+
+    # ----------------------------------------------------------------
+    # USB MIDI, at the class driver's edges (emu/usbmidi.py). Found on
+    # Digitone 1.43 from the USB controller's endpoint-prime register and
+    # checked at the same addresses on 1.44.
+    #
+    # usb_midi_send(len, ptr) packs a MIDI byte stream into USB-MIDI event
+    # packets for the bulk IN endpoint; usb_midi_send_short(len, ptr) sends
+    # one realtime or program-change message. usb_rx_done is the bulk OUT
+    # endpoint's completion callback: it posts (usb_midi_parse, len, buf) to
+    # the deferred-call queue through usb_defer, the jsr at +0x1a.
+    # usb_midi_parse unpacks the packets by cable and code index and calls
+    # each cable's input handler; it ends by handing the buffer back through
+    # usb_rx_release. usb_midi_short_ring is the short sender's 32-byte
+    # packet ring in the USB DMA area, the operand at +0x42.
+    # ----------------------------------------------------------------
+    ('usb_midi_send', Sig(H(24, '20-23', '2:ffe47201', 'a7fddefd1800536fc9dc0e3d0fbcba09'),
+                          hi=DATA_HI), False),
+    ('usb_midi_send_short', Sig(H(24, '8-11', '15:9c2039fc', '3d16be5117d37c12b0c63c961d98e753'),
+                                hi=DATA_HI), False),
+    ('usb_midi_short_ring', Operand('usb_midi_send_short', at=0x42), False),
+    ('usb_rx_done', Sig(H(24, '10-13', '6:000853b9', '3fc5414065c77a10ef9f81d8f13797e8'),
+                        hi=DATA_HI), False),
+    ('usb_defer', Operand('usb_rx_done', at=0x1c), False),
+    ('usb_midi_parse', Sig(H(24, '14-17,20-23', '3:a048d70c', '4410073a3bbcf7bff102055b62231fa6'),
+                           hi=DATA_HI), False),
+    ('usb_rx_release', Sig(H(24, '', '0:7009222f', '27369769e084a72ea8d1812fae3eb50d')), False),
+    # The Elektron screenshot request (RPC 0x04) hands a copy of the screen to
+    # the display task and, unless the copy is already done, waits for it on
+    # a semaphore the copy then posts: rpc_screen_wait is the done-flag test
+    # before that wait, rpc_screen_sem the semaphore (its `pea` at +8).
+    ('rpc_screen_wait', Sig(H(24, '8-11,14-17', '2:ffb8660e', 'e50d7d2e2c22870e91681fe06085eb82'),
+                            hi=DATA_HI), False),
+    ('rpc_screen_sem', Operand('rpc_screen_wait', at=8), False),
+    # sem_init(sem, count) sits just before pend_b in the RTOS, as on the
+    # Digitone 1.43 and 1.44 images: it stores the count and clears the
+    # wait list.
+    ('sem_init', Offset('pend_b', -0x0e), False),
 ]
 
 _NAMES = {name for name, _, _ in SYMBOLS}
