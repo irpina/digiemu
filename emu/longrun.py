@@ -84,7 +84,10 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     fails at execution rather than silently running with a fresh timer clock.
 
     idle_yield: raise vector 32 (reschedule) every N passes through an idle
-    spin (bra.b $self); 20000 is the long-standing value.
+    spin (bra.b $self); 20000 is the long-standing value. A patched
+    firmware whose idle task loops in its own code instead gets the same
+    reschedule from emu/idletick.py, as one of the machine's event sources
+    (so only when stepping with timers).
 
     fast_idle: under the fast stepper, treat reaching an idle spin like a
     wait-for-interrupt -- end the step there and credit the rest of it as
@@ -491,6 +494,14 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             m.raise_vector(32)
     for spin_addr in db.find_idle_spins(main_img, db.MAIN_LOAD):
         at(spin_addr, do_halt)
+    # The same reschedule for an idle loop in a patch's own code, which no
+    # stock run reaches: a stock run steps exactly as before.
+    from emu.idletick import IdleTick
+    idle_tick = IdleTick.install(m, profile, len(main_img), db.MAIN_LOAD,
+                                 count=ev['stand_ins'])
+    if idle_tick is not None:
+        ev['idle_tick'] = idle_tick
+        m.async_sources = getattr(m, 'async_sources', ()) + (idle_tick,)
 
     if softfloat:                      # see emu/softfloat.py
         from emu.softfloat import install as install_softfloat

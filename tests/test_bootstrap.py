@@ -642,6 +642,66 @@ class ColdBootTest(Folder):
         self.assertEqual((self.card.flushed, self.card.closed), (0, 1))
         self.assertFalse(os.path.exists(self.paths.cold))
 
+    def _idle_tick(self, samples):
+        """dspboot.run hands over a profile, and emu/idletick.py's tick
+        samples `samples` in turn (then stock code: None)."""
+        tick = mock.Mock(every=100)
+        tick.sample.side_effect = list(samples) + [None] * 100
+        run = self._run
+
+        def with_profile(*a, **kw):
+            out = run(*a, **kw)
+            kw['machine_out']['profile'] = {}
+            return out
+        for target, fn in (('emu.dspboot.run', with_profile),
+                           ('emu.idletick.IdleTick.install',
+                            lambda *a, **kw: tick)):
+            patcher = mock.patch(target, fn)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return tick
+
+    def test_a_patch_idle_loop_parks_like_spins(self):
+        # Counted chunks: one sample at the end of each, and an idle one
+        # counts the whole chunk. No spin pass anywhere.
+        tick = self._idle_tick([None, 'busy', 'idle'])
+        res, _ev = self.boot([(0, 3), (0, 0), (0, 0)])
+        self.assertEqual((res['stop'], res['parked_at'], res['tasks']),
+                         ('parked', 3000, 3))
+        self.assertEqual(tick.sample.call_count, 3)
+
+    def test_the_native_budget_samples_after_every_slice(self):
+        class State:
+            def __init__(self):
+                self.lefts = []
+
+            def __setattr__(self, name, value):
+                if name == 'left':
+                    self.lefts.append(value)
+                object.__setattr__(self, name, value)
+        budget = mock.Mock(state=State())
+        tick = self._idle_tick(['busy'] * 3 + ['idle'] * 3)
+        with mock.patch('emu.native.budget_available', lambda uc: True), \
+                mock.patch('emu.native.NativeBudget', lambda uc: budget):
+            res, _ev = self.boot([(0, 0)] * 6)
+        # A chunk of 1000 is 258 blocks: slices of 100, 100 and 58. The
+        # second chunk's idle slices park it.
+        self.assertEqual((res['stop'], res['parked_at'], res['native']),
+                         ('parked', 2000, True))
+        self.assertEqual(budget.state.lefts, [100, 100, 58] * 2)
+        self.assertEqual(self.m.uc.calls, [(0x40000400, 0)]
+                         + [(0x4006932E, 0)] * 5)
+        self.assertEqual(tick.sample.call_count, 6)
+
+    def test_without_a_tick_the_native_budget_runs_whole_chunks(self):
+        budget = mock.Mock(state=mock.Mock(left=0))
+        with mock.patch('emu.native.budget_available', lambda uc: True), \
+                mock.patch('emu.native.NativeBudget', lambda uc: budget):
+            res, _ev = self.boot([(0, 1), (200, 0)])
+        self.assertEqual(res['parked_at'], 2000)
+        self.assertEqual(len(self.m.uc.calls), 2)
+        self.assertEqual(budget.state.left, 258)
+
 
 class CliTest(unittest.TestCase):
     """The tools keep their flags and defaults; the body is bootstrap's."""

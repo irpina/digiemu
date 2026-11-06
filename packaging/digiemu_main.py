@@ -60,6 +60,7 @@ IMPORTS = (
     'emu.dspboot', 'emu.dsp', 'emu.edma', 'emu.gpio', 'emu.hle',
     'emu.softfloat', 'emu.ssi', 'emu.trace', 'emu.bootrom', 'dt2.container',
     'emu.fwcheck', 'emu.fwcompare', 'emu.session', 'emu.strict', 'emu.cftiming',
+    'emu.idletick',
     'dt2.elz',
     'dt2.coldfire',
     'ctypes', 'ctypes.wintypes', 'logging', 'tkinter', 'tkinter.filedialog',
