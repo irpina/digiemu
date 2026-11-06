@@ -51,6 +51,15 @@ ALLOWED_NONE = {
     'model_scan_start': 'Models only: no scanned front panel on this image',
     'model_codec_task': 'Models only: no I2C codec task on this image',
     'model_codec_sem': 'Models only: follows model_codec_task',
+    'syn_ssi_sync': 'Syntakt only: no DTIM2-synchronised audio bring-up on this image',
+    'syn_dsp_boot_task': 'Syntakt only: no shared-RAM DSP boot task on this image',
+    'syn_dsp_request_sem': 'Syntakt only: follows syn_dsp_boot_task',
+    'syn_dsp_status': 'Syntakt only: follows syn_dsp_boot_task',
+    'syn_dsp_link_init': 'Syntakt only: no shared-RAM DSP link on this image',
+    'syn_dsp_block_sem': 'Syntakt only: follows syn_dsp_link_init',
+    'syn_dsp_hello_sem': 'Syntakt only: follows syn_dsp_link_init',
+    'syn_midi_task': 'Syntakt only: the MIDI task signature is the Syntakt build',
+    'syn_midi_sem': 'Syntakt only: follows syn_midi_task',
 }
 
 # A `verify` shorter than this is weak evidence on its own: a handful of

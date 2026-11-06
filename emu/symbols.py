@@ -854,7 +854,11 @@ SYMBOLS = [
                          # sequence with d0/d1 where that has d1/d4. Masked:
                          # the pea and lea operands and the high half of the
                          # jsr's; anchored on the PIT3-off store.
-                         Sig(H(34, '4-7,14-17,32-33', '18:33c0fc08', 'db80fceb41c3835b0d3fa82a3c57244d'))),
+                         Sig(H(34, '4-7,14-17,32-33', '18:33c0fc08', 'db80fceb41c3835b0d3fa82a3c57244d')),
+                         # Syntakt 1.40A (0x40086f92): the Digitakt II form
+                         # (clr.w d0 / pea frame_sem+8) with `lea sem_post,a2`
+                         # before the PIT3-off store; anchored on that store.
+                         Sig(H(34, '0-11,30-33', '12:179233c0', 'a9f0b5f6085de8490b8176ad7e9ec326'))),
      False),
 
     # The `pea` operand at intro_done+4 is the frame semaphore's MUTEX
@@ -914,7 +918,10 @@ SYMBOLS = [
                          # 0x40091b18): addq, bra back, then the next
                          # routine's opening movem, frame_sem's pea masked.
                          Sig(H(12, '4-7', '8:fb7e0000', '8caf0df1fae0bfc2fde00d96224031dc'),
-                             hi=DATA_HI)), False),
+                             hi=DATA_HI),
+                         # Syntakt 1.40A (0x40086fbe): addq, bra back to the
+                         # pea, then the next routine's opening bytes.
+                         Sig(H(12, '', '1:8f60f400', 'bbb20cd9b44bb7ecd7ff44a3c11b2341'))), False),
     ('display_wait', Sig(H(32, '6-9,18-21', '2:60ec4879', '086a090b2539290a4a00499dde6f0fce')), False),
 
     # The display module's own PIT3 ISR (0x40125f3c) posts the progress
@@ -1333,6 +1340,51 @@ SYMBOLS = [
     ('model_codec_task', Sig(H(46, '8-11,16-31', '12:1b3e49f9', '133a2a6d1b5cb652e247933788cf4203'),
                              hi=DATA_HI), False),
     ('model_codec_sem', Operand('model_codec_task', at=0x1c), False),
+
+    # ----------------------------------------------------------------
+    # The Syntakt (emu/synboard.py). syn_ssi_sync is the start of the audio
+    # bring-up (0x40000f66 on Syntakt 1.40A): it waits for DMA timer 2's
+    # counter to pass the next 32K boundary plus 64K before it programs SSI1
+    # and eDMA channels 52 and 54. The bootstrap leaves DTIM2 counting an
+    # external clock (DTMR2 = 7); the OS never programs it. Its presence is
+    # what says "this is a Syntakt": elsewhere it stays unresolved.
+    # ----------------------------------------------------------------
+    ('syn_ssi_sync', Sig(H(28, '', '3:07800c02', '38c4967ac5644379d9532d12877c8bab'),
+                         hi=DATA_HI), False),
+
+    # The Syntakt's second CPU (emu/dsplink.py) boots as the Digitone's does:
+    # this task (0x40081c30 on 1.40A) holds PB6, streams section 6 out of
+    # DSPI2 on eDMA 29, releases the reset and runs the handshake section 7
+    # answers ('HO'/'HA', 'B0', 0xA5A5) through the edge-port handler at
+    # vector 68. It pends on its request semaphore 0x3c bytes in, as the
+    # Digitone's does. Its status word (0x41ba72f0) is cleared 0x54 bytes in
+    # and reads 6 once the second CPU runs (1..5 are its failures: the
+    # sections missing, 'NO', the shared-RAM test). Kept apart from
+    # dsp_boot_task so the Digitone's rules are untouched.
+    ('syn_dsp_boot_task', Sig(H(48, '20-23,28-35,42-45', '0:70ef7210', '090a313735a5dd8f3fa3d75db9a0f261'),
+                              hi=DATA_HI), False),
+    ('syn_dsp_request_sem', Operand('syn_dsp_boot_task', at=0x3c), False),
+    ('syn_dsp_status', Operand('syn_dsp_boot_task', at=0x54), False),
+    # The link's set-up (0x40081ec8 on 1.40A) initialises the boot task's
+    # request semaphore (pea at +0x0a), then the block semaphore (+0x1a) and
+    # the hello semaphore (+0x56). The edge-port handler (vector 68) posts
+    # the last two: 'HO'/'HA' has arrived, and the second CPU wants the next
+    # 2 KB of the upload. semscan cannot see those posts, so faked they
+    # start the upload with nothing to send (emu/dsplink.py never fakes
+    # them).
+    ('syn_dsp_link_init', Sig(H(40, '8-15,18-21,24-31,36-39', '3:f448d71c', 'bdf7747ef79a5490a97114062303b47d'),
+                              hi=DATA_HI), False),
+    ('syn_dsp_block_sem', Operand('syn_dsp_link_init', at=0x1c), False),
+    ('syn_dsp_hello_sem', Operand('syn_dsp_link_init', at=0x58), False),
+    # The Syntakt's MIDI input task (0x400f6cee on 1.40A): it registers
+    # three input queues with a shared event semaphore (pea at +0x08) and
+    # pends on it at the top of its loop. The drivers post it from their
+    # callbacks, which semscan does not see; faked, the task spins at
+    # priority 7 and starves every task below it -- the second CPU's
+    # handshake among them.
+    ('syn_midi_task', Sig(H(32, '10-13,16-19,22-29', '6:7cfc4879', '42ba51e6339774a9742f027dc1da853b'),
+                          hi=DATA_HI), False),
+    ('syn_midi_sem', Operand('syn_midi_task', at=0x0a), False),
 
     # Every `bra.b $self` (opcode 60FE) -- the RTOS idiom for "nothing to do,
     # wait for the scheduler's timer tick to preempt me". dspboot.py already

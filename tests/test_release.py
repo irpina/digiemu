@@ -242,8 +242,14 @@ class StatusTest(Tmp):
                          'Digitakt_II_OS1.15C.syx')
 
     def test_unsupported_product_is_named_and_refused(self):
+        # Every product release.PRODUCTS names has a device file now, so take
+        # one away: the Syntakt, from a copy of devices/.
+        import shutil
+        devices = os.path.join(self.tmp, 'devices-no-syntakt')
+        shutil.copytree(DEVICES, devices)
+        os.remove(os.path.join(devices, 'syntakt.toml'))
         path = self.syx(ids=SYNTAKT, version=b'1.20')
-        r = release.identify_release(path, DEVICES)
+        r = release.identify_release(path, devices)
         self.assertEqual(r.status, 'unsupported')
         self.assertEqual(r.product, 'Syntakt')
         self.assertIsNone(r.device)
@@ -472,7 +478,8 @@ class DeviceIdsTest(Tmp):
                                'Digitone': (0x0D, 0x08),
                                'Digitone II': (0x15, 0x10),
                                'Model:Cycles': (0x11, 0x0C),
-                               'Model:Samples': (0x0F, 0x0A)})
+                               'Model:Samples': (0x0F, 0x0A),
+                               'Syntakt': (0x16, 0x11)})
         for dev in device.load_all(DEVICES):
             self.assertEqual(release.PRODUCTS[(dev.sysex_id,
                                                dev.os_stream_id)][0],

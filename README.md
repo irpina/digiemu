@@ -9,6 +9,13 @@ On the Digitone a second emulated CPU runs the firmware's own FM voice
 engine. The Digitone has a window of its own, and the two Models share one,
 with velocity pads.
 
+The Elektron Syntakt (OS 1.40A) is also in, as work in progress: it boots to
+its live user interface with the panel, sequencer and parameter locks
+working, and its second CPU (wired as the Digitone's) renders the digital
+machines' voices. The original digital machines and the analog tracks live in
+the FPGA, which is not modelled, so the Syntakt's outputs are silent for now
+([SYNTAKT.md](SYNTAKT.md)).
+
 You bring the firmware. digiemu contains none of Elektron's code, and it is
 not affiliated with or endorsed by Elektron.
 
@@ -21,7 +28,8 @@ not affiliated with or endorsed by Elektron.
 2. Get the firmware from Elektron's website: `Digitakt_OS1.53.syx` for the
    Digitakt, `Digitone_and_Digitone_Keys_OS1.44.syx` (or 1.43) for the
    Digitone, `model-cycles_OS1.13.syx` for the Model:Cycles or
-   `model-samples_OS1.13.syx` for the Model:Samples.
+   `model-samples_OS1.13.syx` for the Model:Samples, or `Syntakt_OS1.40A.syx`
+for the Syntakt (silent, see Status).
 3. Run `digiemu.exe`, click **Add firmware** and pick the `.syx`.
 4. When it says the firmware is ready, click **Play**.
 
@@ -179,8 +187,11 @@ digiemu is tested with **Digitakt mk1 OS 1.53** (SHA-256
 **Model:Cycles OS 1.13** (SHA-256
 `44fe586269631a0ca7da25a3383fc6733c314809505fc3cc52f1e0ed9800640c`) and
 **Model:Samples OS 1.13** (SHA-256
-`e11859b68deb7e5e3fe86ab32581212093849c4be5d3950add011eac398a2ce8`). Other
-releases of these four are offered as untested and run once you confirm.
+`e11859b68deb7e5e3fe86ab32581212093849c4be5d3950add011eac398a2ce8`). The
+Syntakt is tested with **OS 1.40A** (SHA-256
+`266a5a3022ff565bf470173147b7f3005b7da8ef80724b6271836818ac2b5828`) and is a
+work in progress. Other releases of these devices are offered as untested and
+run once you confirm.
 Other Elektron products are recognised and turned away for now.
 
 **Works:** booting to the live user interface; every key, encoder and key
@@ -199,6 +210,10 @@ given PC. [MODELS.md](MODELS.md) covers what the Models add.
 - The Models' USB audio and battery (Power Handle) are not modelled.
 - Whether a 44.1 kHz sample plays at the right pitch is not checked yet. A
   48 kHz sample's rendered output has been checked against its source.
+- The Syntakt boots to its UI with the second CPU running, but its FPGA
+  (the original digital machines, the analog tracks, the voice chain and the
+  outputs) is not modelled, so it is silent; its LEDs, MIDI and USB audio are
+  not checked. See [SYNTAKT.md](SYNTAKT.md).
 - The Digitone runs as a plain Digitone: the Digitone Keys' keyboard, wheels
   and extra keys are not there.
 - Some interrupt-controller behaviour is approximated rather than modelled.
@@ -230,7 +245,8 @@ crashing on a constant subtraction.
 
 To work on the emulator itself (the panel on its own, the boot tools, the
 tracing tools), start with [DIGITAKT-MK1.md](DIGITAKT-MK1.md);
-[DIGITONE-MK1.md](DIGITONE-MK1.md) covers what the Digitone adds, and
+[DIGITONE-MK1.md](DIGITONE-MK1.md) covers what the Digitone adds,
+[SYNTAKT.md](SYNTAKT.md) what the Syntakt adds, and
 [MODELS.md](MODELS.md) what the Model:Cycles and Model:Samples add.
 
 ### Building the Windows app
@@ -313,6 +329,7 @@ snapshots, card images and any file over 1 MB, on every pull request.
 | [docs/FIRMWARE-CHECK.md](docs/FIRMWARE-CHECK.md) | Checking a custom build before it goes on a device: what `emu.fwcheck` checks and what it cannot |
 | [DIGITAKT-MK1.md](DIGITAKT-MK1.md) | How the mk1 emulation works: boot, panel, audio, sequencer, and the tools |
 | [DIGITONE-MK1.md](DIGITONE-MK1.md) | The Digitone: its second CPU, card, panel and measurements |
+| [SYNTAKT.md](SYNTAKT.md) | The Syntakt (work in progress): boots to its UI, second CPU running; the FPGA is not modelled, so it is silent |
 | [MODELS.md](MODELS.md) | The Model:Cycles and Model:Samples: their scanned panel, codec, audio and +Drive |
 | [docs/mk1/](docs/mk1/00-INDEX.md) | The firmware reference: 01–09 are generated, 10 onwards written by hand |
 | [patches/README.md](patches/README.md) | The six Unicorn patches |

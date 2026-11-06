@@ -126,7 +126,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # A device file can exist (Digitakt II, Digitone II) without the first-run
 # recipe or a panel for it: those are named and refused.
 PANELS = {'dt1': 'emu.dtpanel', 'dn1': 'emu.dnpanel', 'mc': 'emu.mdpanel',
-          'ms': 'emu.mdpanel'}
+          'ms': 'emu.mdpanel', 'syn': 'emu.synpanel'}
 # How the refusals and the empty list name what this version runs.
 SUPPORTED = 'Digitakt (mk1), Digitone (mk1), Model:Cycles and Model:Samples'
 
@@ -434,9 +434,10 @@ def _fwcheck():
 
 def _panel_module(name='emu.dtpanel'):
     """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel,
-    emu.mdpanel), looked up in sys.modules first like the others. The
-    imports are spelled out, not importlib'd, so the packaging scan
-    (tests/test_packaging.py) sees all three and the bundle carries them."""
+    emu.mdpanel, emu.synpanel), looked up in sys.modules first like the
+    others. The imports are spelled out, not importlib'd, so the packaging
+    scan (tests/test_packaging.py) sees all four and the bundle carries
+    them."""
     mod = sys.modules.get(name)
     if mod is not None:
         return mod
@@ -446,6 +447,8 @@ def _panel_module(name='emu.dtpanel'):
         from emu import mdpanel as mod
     elif name == 'emu.dtpanel':
         from emu import dtpanel as mod
+    elif name == 'emu.synpanel':
+        from emu import synpanel as mod
     else:
         raise ImportError('no panel module %r' % name)
     return mod

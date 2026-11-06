@@ -226,13 +226,13 @@ class ShippedDeviceFilesTest(unittest.TestCase):
 
     def test_every_shipped_product_is_present(self):
         # Three since the mk1 port added devices/digitakt.toml, four since
-        # devices/digitone.toml, six since the Model:Cycles and Model:Samples.
-        # This used to read "both products" and assert the two Digitakt II-era
-        # ones.
+        # devices/digitone.toml, six since the Model:Cycles and Model:Samples,
+        # seven since devices/syntakt.toml. This used to read "both products"
+        # and assert the two Digitakt II-era ones.
         names = sorted(d.name for d in self.devices)
         self.assertEqual(names, ['Digitakt', 'Digitakt II', 'Digitone',
                                  'Digitone II', 'Model:Cycles',
-                                 'Model:Samples'])
+                                 'Model:Samples', 'Syntakt'])
 
     def test_digitone_panel_is_complete(self):
         """devices/digitone.toml: every measured code 1..54 has a label, a

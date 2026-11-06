@@ -80,7 +80,7 @@ import threading
 import zlib
 from time import perf_counter as _clock
 
-from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_PROT_ALL
+from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_PROT_ALL
 from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC,
                                 UC_M68K_REG_SR)
 
@@ -268,9 +268,22 @@ class DspCpu(_MainSide):
     """The DSP itself: section 7 on a second engine. See the module
     docstring for the wiring and when it runs."""
 
-    def __init__(self, m, section7, request_sem=None):
+    def __init__(self, m, section7, request_sem=None, hle_bzero=False,
+                 loader=False):
         super().__init__(m, request_sem)
         self.s7 = bytes(section7)
+        self.hle_bzero = bool(hle_bzero)
+        # loader: stand in for section 6's half of the handshake, as on the
+        # Syntakt, where section 6 (not section 7) is what the main CPU
+        # first hears from. Out of reset it raises PG2 -- the main CPU's
+        # edge-port handler takes that as "the loader is up" -- and waits
+        # for an edge on PA4; then it reads section 7 and jumps to it with
+        # PG2 still high, so section 7's first toggle is a falling edge.
+        # Section 7 is loaded where section 6 would have put it, as for the
+        # Digitone.
+        self.loader = bool(loader)
+        self.loader_wait = False
+        self.entry, self.idle_pc = section7_entry(self.s7)
         self.dsp = None             # the DSP's Machine while out of reset
         self.pc = None
         self.idle = False           # parked in its idle loop
@@ -332,9 +345,51 @@ class DspCpu(_MainSide):
                       begin=PG2_SET, end=PG2_SET)
         d.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_pg2,
                       begin=PG2_CLR, end=PG2_CLR)
+        if self.loader:
+            # The Syntakt's section 7 hands each rendered block to the shared
+            # RAM through its own eDMA channel 47 (SSRT start, 64 linked
+            # minor loops of 16 bytes from 0x80003840 to +0x1B0), and waits
+            # for DONE before the next render. The Digitone's DSP does not:
+            # its main CPU's channel 47 fetches the voices instead.
+            from emu import edma_sw
+            from emu.harness import PAGE as _PAGE
+            d.ensure(0xFC044000 & ~(_PAGE - 1))
+            self.dsp_edma = edma_sw.SoftwareBank(d, native=False)
+        bzero = find_bzero(self.s7) if self.hle_bzero else None
+        if bzero is not None:
+            d.uc.hook_add(UC_HOOK_CODE, (lambda uc, a, n, data:
+                                         self._hle_bzero(d, uc)),
+                          begin=bzero, end=bzero)
         self._budget = (native.NativeBudget(d.uc)
                         if native.budget_available(d.uc) else None)
         return d
+
+    def _hle_bzero(self, d, uc):
+        """Section 7's byte-wise bzero(dst, n), done on the host. The
+        Syntakt's clears its 64 MB sample memory at boot: 256M instructions,
+        about a second on the device, during which the main CPU is streaming
+        the sections; here the second CPU runs in step with the main CPU,
+        whose boot watchdog gives up long before. The result is the same
+        memory, so nothing downstream can tell."""
+        from emu.harness import PAGE
+        sp = uc.reg_read(UC_M68K_REG_A7)
+        ret, dst, n = struct.unpack('>III', bytes(uc.mem_read(sp, 12)))
+        end = dst + n
+        at = dst
+        while at < end:
+            page = at & ~(PAGE - 1)
+            stop = min(end, page + PAGE)
+            if page in d.mapped:
+                uc.mem_write(at, bytes(stop - at))
+            # An unmapped page is zero when it is mapped; drop any write
+            # still pending for the cleared span.
+            elif page in d.pending:
+                d.pending[page] = [(a, b) for a, b in d.pending[page]
+                                   if a + len(b) <= dst or a >= end]
+            at = stop
+        uc.reg_write(UC_M68K_REG_A7, sp + 4)
+        uc.reg_write(UC_M68K_REG_PC, ret)
+        self.fired['bzero'] += 1
 
     def _on_stub(self, uc, access, address, size, value, data):
         for addr, n, v in DSP_STUBS:
@@ -366,6 +421,12 @@ class DspCpu(_MainSide):
             level = 0
         if level != self.pa4:
             self.pa4 = level
+            if self.loader_wait:
+                # The main CPU's answer to the loader: section 7 runs now.
+                self.loader_wait = False
+                self.fired['pa4'] += 1
+                self._start_section7(pg2=1)
+                return
             if self.dsp is not None:
                 # DTIM0's capture flag is one latch: edges that arrive while
                 # the DSP cannot take them are one interrupt, not several.
@@ -396,25 +457,37 @@ class DspCpu(_MainSide):
                 self.fired['pa4'] += 1
 
     def reset_released(self):
-        if self.dsp is not None:
+        if self.dsp is not None or self.loader_wait:
             return
         self.wait_idle()
+        if self.loader:
+            self.loader_wait = True
+            self.pg2 = 1
+            with self._lock:
+                self.edges += 1
+            self.fired['loader'] += 1
+            return
+        self._start_section7()
+
+    def _start_section7(self, pg2=0):
         d = self.dsp = self._new_machine()
         d.load(self.s7, DSP_LOAD)
         for page in DSP_PAGES:
             d.ensure(page)
         d.uc.reg_write(UC_M68K_REG_SR, 0x2700)
         d.uc.reg_write(UC_M68K_REG_A7, DSP_INITIAL_SP)
-        self.pc = DSP_ENTRY
+        self.pc = self.entry
         self.idle = False
         self.booted = False
         self.irqs = 0
         self.prestarted = False
-        self.pg2 = 0
+        self.pg2 = pg2
         self.fired['boot'] += 1
 
     def reset_asserted(self):
         self.wait_idle()
+        self.loader_wait = False
+        self.pg2 = 0
         self.dsp = None
         self._budget = None
         self.pc = None
@@ -429,13 +502,13 @@ class DspCpu(_MainSide):
         if self._budget is not None:
             self._budget.state.left = max(1, int(instructions / PER_BLOCK))
             self._budget.state.blocks = 0
-            uc.emu_start(self.pc, DSP_IDLE)
+            uc.emu_start(self.pc, self.idle_pc)
             ran = int(self._budget.state.blocks * PER_BLOCK)
         else:
-            uc.emu_start(self.pc, DSP_IDLE, count=instructions)
+            uc.emu_start(self.pc, self.idle_pc, count=instructions)
             ran = instructions
         self.pc = uc.reg_read(UC_M68K_REG_PC)
-        self.idle = self.pc == DSP_IDLE
+        self.idle = self.pc == self.idle_pc
         if self.idle:
             self.booted = True
         self.dsp_instructions += ran
@@ -629,6 +702,8 @@ class DspCpu(_MainSide):
                  'pg2': self.pg2, 'now': self.now, 'last': self.last,
                  'renders': self.renders, 'fired': dict(self.fired),
                  'prestarted': self.prestarted}
+        if self.loader_wait:
+            state['loader_wait'] = True
         if self.dsp is None:
             return state
         from emu.snapshot import REGS
@@ -663,6 +738,9 @@ class DspCpu(_MainSide):
         self.prestarted = bool(state.get('prestarted', False))
         if not state.get('on'):
             self.reset_asserted()
+            if state.get('loader_wait'):
+                self.loader_wait = True
+                self.pg2 = int(state['pg2'])
             return
         from emu.snapshot import REGS
         d = self.dsp = self._new_machine()
@@ -705,6 +783,51 @@ def find_section7(sections_dir):
     return data
 
 
+# Section 7's bzero(dst, n): `move.l 8(sp),d0; beq; movea.l 4(sp),a0;
+# add.l a0,d0; clr.b (a0)+; cmp.l a0,d0; bne; rts`, 20 bytes with no address
+# in them. Found by its first instruction and the MD5 of all 20, as
+# emu/symbols.py does, so no firmware bytes are kept here.
+BZERO_ANCHOR = bytes.fromhex('202f0008')        # move.l 8(sp),d0
+BZERO_LEN = 20
+BZERO_MD5 = '0f0c696c4ff8ebb5b5bc133fba71f5b1'
+
+
+def find_bzero(s7):
+    """-> the address of section 7's bzero if it has exactly one, else None."""
+    import hashlib
+    hits = []
+    at = s7.find(BZERO_ANCHOR)
+    while at >= 0:
+        if hashlib.md5(s7[at:at + BZERO_LEN]).hexdigest() == BZERO_MD5:
+            hits.append(at)
+        at = s7.find(BZERO_ANCHOR, at + 1)
+    return DSP_LOAD + hits[0] if len(hits) == 1 else None
+
+
+def section7_entry(s7):
+    """-> (entry, idle) of a section 7 image. Its first longword is the
+    entry, and on both products that boot one (Digitone 0x40000b92, Syntakt
+    0x40001070) the idle loop section 7 parks in, `bra.b *` (60FE), sits
+    right before it. When it does not, the Digitone's constants stand."""
+    entry = struct.unpack_from('>I', s7, 0)[0]
+    off = entry - 2 - DSP_LOAD
+    if 0 <= off and s7[off:off + 2] == b'\x60\xfe':
+        return entry, entry - 2
+    return DSP_ENTRY, DSP_IDLE
+
+
+def _profile_dsp(profile):
+    """-> (boot task, request semaphore) of an image that boots a second
+    CPU: the Digitone's rules, or the Syntakt's (syn_*), or (None, None)."""
+    task = getattr(profile, 'dsp_boot_task', None)
+    if task is not None:
+        return task, getattr(profile, 'dsp_request_sem', None)
+    task = getattr(profile, 'syn_dsp_boot_task', None)
+    if task is not None:
+        return task, getattr(profile, 'syn_dsp_request_sem', None)
+    return None, None
+
+
 def install(m, events, profile, sections_dir=None, real=True):
     """Model the DSP of an image that boots one.
 
@@ -712,13 +835,21 @@ def install(m, events, profile, sections_dir=None, real=True):
     DspLink stand-in otherwise, or None for an image with no DSP boot task
     (every product but the Digitone).
     """
-    if getattr(profile, 'dsp_boot_task', None) is None:
+    task, request_sem = _profile_dsp(profile)
+    if task is None:
         return None
+    syntakt = getattr(profile, 'syn_dsp_boot_task', None) is not None
     s7 = find_section7(sections_dir) if real else None
     if s7 is not None:
-        link = DspCpu(m, s7, request_sem=profile.dsp_request_sem)
+        link = DspCpu(m, s7, request_sem=request_sem, hle_bzero=syntakt,
+                      loader=syntakt)
         events['dspcpu'] = link
     else:
-        link = DspLink(m, request_sem=profile.dsp_request_sem)
+        link = DspLink(m, request_sem=request_sem)
+    # The Syntakt's handshake semaphores, posted from the edge-port handler.
+    link.handshake_sems = tuple(
+        sem for sem in (getattr(profile, 'syn_dsp_block_sem', None),
+                        getattr(profile, 'syn_dsp_hello_sem', None))
+        if sem is not None)
     events['dsplink'] = link
     return link

@@ -107,7 +107,20 @@ MODELS = Profile(
     csr_mask=0x16,
 )
 
-PROFILES = {p.name: p for p in (DIGITAKT2, MK1, MODELS)}
+# Syntakt, from its audio bring-up (0x40000f66 on 1.40A, emu/synboard.py):
+# the Digitakt mk1's SSI1 and eDMA channels 52/54, but a TDM frame of eight
+# 32-bit slots -- 32 bytes a minor loop, 64 minor loops (a 2 KB ring, SLAST
+# -2048) and CSR 6 -- for both the transmit ring at 0x80000000 and the
+# receive ring at 0x80001800. Which slots carry the main outputs is read off
+# the captured audio, not assumed.
+SYNTAKT = Profile(
+    'syntakt', 52, 54, 0xFC0C8008, 0xFC0C8000, 172, 174,
+    legacy={52: (0xFC0C8008, 0x0202, 0, 0x20, 4, 0x06),
+            54: (0xFC0C8000, 0x0202, 4, 0x20, 0, 0x06)},
+    csr_mask=0x16,
+)
+
+PROFILES = {p.name: p for p in (DIGITAKT2, MK1, MODELS, SYNTAKT)}
 
 
 def _signed(value, bits):

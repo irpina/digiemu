@@ -972,8 +972,11 @@ CARD_PROJECT0 = 0x80000 * 512        # project slot 0, 0x10000000
 # the image (symbols.dsp_status) on a Digitone, whose second CPU has to have
 # come up (2) -- see emu/dsplink.py.
 ACCEPTANCE_KEYS = ('error_u32', 'progress_done', 'progress_total',
-                   'mounted_u32', 'dsp_running_u32')
+                   'mounted_u32', 'dsp_running_u32', 'syn_dsp_running_u32')
 DSP_RUNNING = 2
+# The Syntakt's status word (symbols.syn_dsp_status) counts its own way: 6
+# once section 7 has answered 0xA5A5, 1..5 for its failures.
+SYN_DSP_RUNNING = 6
 
 
 def _card_problems(path, ekfs=True):
@@ -1178,6 +1181,10 @@ def check_ram(read, acceptance):
     if dsp not in (None, DSP_RUNNING):
         problems.append('the DSP did not come up (0x%08x = %d; 1 is DSP BOOT '
                         'FAILURE)' % (acceptance['dsp_running_u32'], dsp))
+    syn = values.get('syn_dsp_running_u32')
+    if syn not in (None, SYN_DSP_RUNNING):
+        problems.append('the second CPU did not come up (0x%08x = %d; 6 is '
+                        'running)' % (acceptance['syn_dsp_running_u32'], syn))
     return values, problems
 
 
@@ -1417,6 +1424,10 @@ def _intro_policy(paths):
     if prof.dsp_status is not None and 'dsp_running_u32' not in acceptance:
         # A Digitone: its second CPU must have come up (emu/dsplink.py).
         acceptance = dict(acceptance, dsp_running_u32=prof.dsp_status)
+    syn = getattr(prof, 'syn_dsp_status', None)
+    if syn is not None and 'syn_dsp_running_u32' not in acceptance:
+        # A Syntakt: the same requirement, its own status word.
+        acceptance = dict(acceptance, syn_dsp_running_u32=syn)
     return dev, tuple(dev.intro_channels), except_sem, acceptance
 
 

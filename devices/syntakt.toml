@@ -1,0 +1,152 @@
+# Syntakt. Work in progress: the boot, the second CPU and the panel are being
+# measured on OS 1.40A; see SYNTAKT.md.
+#
+# The Syntakt pairs a main MCF5441x with a second one (section 7) that renders
+# the machines added after launch (BD MODERN ... SP TWINSHOT); the original
+# machines run in the FPGA (section 1), which is not modelled, so they are
+# silent here. Like the other device files this one holds no guest addresses:
+# those are resolved by signature in emu/symbols.py.
+
+[device]
+name = "Syntakt"
+short = "syn"
+sysex_id = 0x16
+os_stream_id = 0x11
+
+[[firmware]]
+version = "1.40A"
+sha256 = "266a5a3022ff565bf470173147b7f3005b7da8ef80724b6271836818ac2b5828"
+filename = "Syntakt_OS1.40A.syx"
+
+[card]
+# Not measured yet: whether the Syntakt formats an ekFS volume. It has no
+# sample engine, so start from the Digitone's answer.
+ekfs = false
+
+[panel]
+kind = "syntakt"
+linear_channels = 0
+encoders = 9
+encoder_counts = 4
+
+# code = [channel, bit], measured with tools/panelsweep.py (each position
+# pressed, the code the firmware reported read back); names from the
+# firmware's factory-test table (0x401c3660 names, 0x401c3770 codes in
+# MAIN OS 1.40A). 2/4 reports 0 (no key); 45..48 are encoder pushes the
+# table does not name (F, G, H and LEVEL/DATA in some order).
+[panel.exceptions]
+1 = [2, 1]   # FUNC
+2 = [2, 0]   # TRK
+3 = [4, 1]   # PTN
+4 = [4, 0]   # BANK
+5 = [4, 2]   # PATTERN MENU
+6 = [3, 0]   # GLOBAL
+7 = [3, 1]   # FX
+8 = [3, 2]   # TEMPO
+9 = [4, 3]   # RECORD
+10 = [4, 4]   # PLAY
+11 = [4, 5]   # STOP
+12 = [4, 6]   # YES
+13 = [3, 3]   # NO
+14 = [4, 7]   # UP
+15 = [3, 5]   # DOWN
+16 = [3, 4]   # LEFT
+17 = [3, 6]   # RIGHT
+18 = [3, 7]   # PAGE
+19 = [2, 2]   # TRIG
+20 = [2, 3]   # SYN
+21 = [2, 5]   # FLTR
+22 = [2, 6]   # AMP
+23 = [2, 7]   # LFO
+24 = [0, 0]   # 1
+25 = [0, 1]   # 2
+26 = [0, 2]   # 3
+27 = [0, 3]   # 4
+28 = [0, 4]   # 5
+29 = [0, 5]   # 6
+30 = [0, 6]   # 7
+31 = [0, 7]   # 8
+32 = [1, 0]   # 9
+33 = [1, 1]   # 10
+34 = [1, 2]   # 11
+35 = [1, 3]   # 12
+36 = [1, 4]   # 13
+37 = [1, 5]   # 14
+38 = [1, 6]   # 15
+39 = [1, 7]   # 16
+40 = [5, 4]   # A
+41 = [5, 3]   # E
+42 = [5, 6]   # D
+43 = [5, 5]   # C
+44 = [5, 2]   # B
+45 = [5, 1]
+46 = [5, 0]
+47 = [5, 7]
+48 = [6, 0]
+
+[panel.labels]
+1 = "FUNC"
+2 = "TRK"
+3 = "PTN"
+4 = "BANK"
+5 = "PATTERN MENU"
+6 = "GLOBAL"
+7 = "FX"
+8 = "TEMPO"
+9 = "RECORD"
+10 = "PLAY"
+11 = "STOP"
+12 = "YES"
+13 = "NO"
+14 = "UP"
+15 = "DOWN"
+16 = "LEFT"
+17 = "RIGHT"
+18 = "PAGE"
+19 = "TRIG"
+20 = "SYN"
+21 = "FLTR"
+22 = "AMP"
+23 = "LFO"
+24 = "1"
+25 = "2"
+26 = "3"
+27 = "4"
+28 = "5"
+29 = "6"
+30 = "7"
+31 = "8"
+32 = "9"
+33 = "10"
+34 = "11"
+35 = "12"
+36 = "13"
+37 = "14"
+38 = "15"
+39 = "16"
+40 = "A"
+41 = "E"
+42 = "D"
+43 = "C"
+44 = "B"
+
+[boot]
+# The OS's own check (MAIN OS 1.40A, "WRONG UI CARD") compares the card type
+# with 0x0B.
+ui_card = 0x0B
+
+[memory]
+ddr_mb = 128
+
+[audio]
+ssi_profile = "syntakt"
+request_hz = 48000
+rate = 48000
+sample_bits = 24
+ips = 64000000
+fallback_request_hz = 2000
+
+[intro]
+channels = [3]
+unblocks_frame_sem = false
+post_intro_ips = 4680000

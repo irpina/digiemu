@@ -14,7 +14,9 @@ Digitone mk1 OS 1.43, SHA-256
 `44fe586269631a0ca7da25a3383fc6733c314809505fc3cc52f1e0ed9800640c`, and
 Model:Samples OS 1.13, SHA-256
 `e11859b68deb7e5e3fe86ab32581212093849c4be5d3950add011eac398a2ce8`
-([MODELS.md](../MODELS.md)).
+([MODELS.md](../MODELS.md)), and, as work in progress, Syntakt OS 1.40A,
+SHA-256 `266a5a3022ff565bf470173147b7f3005b7da8ef80724b6271836818ac2b5828`
+([SYNTAKT.md](../SYNTAKT.md)).
 
 ## What works
 
@@ -49,6 +51,13 @@ Model:Samples OS 1.13, SHA-256
   key LEDs, and live audio at 100% of real time. Their board is
   `emu/modelboard.py`: the panel the main CPU scans itself, the I2C codec
   and the PIT1 delay. The Model:Samples loads samples like the Digitakt.
+- **The Syntakt (work in progress).** Boots OS 1.40A from a cold start
+  through the intro to the live UI (first run about 45 s), with the panel,
+  the sequencer and parameter locks working. The second CPU boots through
+  the section 6 / section 7 handshake as on the Digitone and renders the
+  digital machines' blocks (`emu/dsplink.py`, board in `emu/synboard.py`,
+  window in `emu/synpanel.py`). The FPGA is not modelled, so the outputs are
+  silent.
 - **Checking a build before it is flashed** (`emu.fwcheck`,
   [FIRMWARE-CHECK.md](FIRMWARE-CHECK.md)). It runs the stages below and
   compares each with the stock build:
@@ -133,6 +142,13 @@ Model:Samples OS 1.13, SHA-256
   pad's pressure after the hit are not modelled; the Model:Samples' factory
   samples are not in the firmware. The keys are named by the firmware's
   factory test, which may not be the words printed on the panel.
+- **The Syntakt.** The FPGA (the original digital machines, the analog
+  tracks, the voice chain after the second CPU, the outputs) is not modelled,
+  and nothing mixes the second CPU's voices into the SSI output, so there is
+  no sound. No LED seed addresses for 1.40A; MIDI and USB audio are not
+  checked. Patterns only advance at the device's own `[audio] ips`, not at the
+  GUI's instruction pace. The window places the keys on the Digitakt
+  window's plan, not the Syntakt's faceplate.
 - **Other devices.** The Digitakt II and Digitone II paths from upstream
   digikit still work as upstream left them.
 
@@ -167,7 +183,9 @@ Model:Samples OS 1.13, SHA-256
    DSP); the Digitone Keys (bit 19, the keyboard on panel tags 5/6, the
    wheels on the ADC, codes 55–72); a panel sweep that sees the PAGE and
    FUNC LEDs lit.
-10. **Upstream:** digikit would benefit from the card-identification (CID)
+10. **Syntakt:** mix the second CPU's voices into the SSI output; model the
+    FPGA; find the LED seed addresses for 1.40A.
+11. **Upstream:** digikit would benefit from the card-identification (CID)
     fix, the INTC verification, and the ekFS index and sample format.
 11. **Start the app's OS the device's way:** the bootstrap's boot flags,
     and the DDR model from the cold boot. Both need a new first-run

@@ -617,9 +617,11 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         checkpoint_manifest['dsplink'] = ('cpu' if isinstance(
             link, _dsplink.DspCpu) else 1)
         m.async_sources = getattr(m, 'async_sources', ()) + (link,)
-        if unblock and link.request_sem is not None:
-            skip.add(link.request_sem)
-            ev['never_fake'] = ev['never_fake'] | {link.request_sem}
+        never = {sem for sem in (link.request_sem,) + tuple(
+            getattr(link, 'handshake_sems', ())) if sem is not None}
+        if unblock and never:
+            skip.update(never)
+            ev['never_fake'] = ev['never_fake'] | never
 
     # The Model:Cycles and Model:Samples board (emu/modelboard.py): their
     # panel scan, audio codec and delay timer. Only an image with the Models'
@@ -634,6 +636,17 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         if unblock and board.codec_sem is not None:
             skip.add(board.codec_sem)
             ev['never_fake'] = ev['never_fake'] | {board.codec_sem}
+
+    # The Syntakt board (emu/synboard.py): DMA timer 2's counter, which the
+    # bootstrap leaves running. Only an image with the Syntakt's audio
+    # bring-up gets it.
+    from emu import synboard as _synboard
+    synb = _synboard.install(m, ev, profile)
+    if synb is not None:
+        checkpoint_manifest['synboard'] = 1
+        if unblock and synb.never_fake:
+            skip.update(synb.never_fake)
+            ev['never_fake'] = ev['never_fake'] | set(synb.never_fake)
 
     def onr(uc, typ, addr, size, val, data):
         if addr == USR8: uc.mem_write(USR8, bytes([0x04 | (0x01 if inq else 0)]))
@@ -665,6 +678,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         checkpoint_components['dsplink'] = link
     if board is not None:
         checkpoint_components['modelboard'] = board
+    if synb is not None:
+        checkpoint_components['synboard'] = synb
     if tx is not None:
         checkpoint_components['edma_tx'] = tx
     if ssi0 is not None:

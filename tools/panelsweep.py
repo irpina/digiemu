@@ -283,7 +283,11 @@ def diff_offset(raw_a, raw_b, label):
     this tool relies on does not hold on this build, and guessing which
     byte to trust would silently corrupt the whole table.
     """
+    # The Syntakt's records carry a 32-bit timestamp in their last four
+    # bytes, which differs between any two events; it is not the value.
     diffs = [i for i in range(RECORD_SIZE) if raw_a[i] != raw_b[i]]
+    if len(diffs) > 1 and set(diffs) - {12, 13, 14, 15}:
+        diffs = [i for i in diffs if i < 12] or diffs
     if len(diffs) != 1:
         raise CalibrationError(
             '%s: expected exactly one differing byte between %s and %s, '
@@ -708,6 +712,8 @@ def main(argv=None):
     ap.add_argument('--top', type=int, default=200,
                      help='max rows to print per table (default 200)')
     ap.add_argument('--json', help='write the full report here')
+    ap.add_argument('--gui', action='store_true',
+                    help='the snapshot is a gui.snap from emu.portable')
     args = ap.parse_args(argv)
 
     def parse_span(spec, label):
@@ -755,9 +761,18 @@ def main(argv=None):
     # False), and those defaults are also what that snapshot needs on the way
     # back in -- unblock in particular force-satisfies pends, which is a boot
     # aid and wrong once the UI is live.
-    m, ev, st, pc, inq, at = build(
-        args.snapshot, syx=args.syx, sdgate=True, esdhc=True,
-        deferred_components=('timers',))
+    if args.gui:
+        # A gui.snap from emu.portable's first run: the GUI's flags, with the
+        # intro frame semaphore excepted, exactly as emu/bootstrap.py builds it.
+        from emu import bootstrap as _bs
+        _flags = dict(_bs.GUI_FLAGS, deferred_components=('timers',))
+        if profile.frame_sem is not None:
+            _flags['unblock_except'] = (profile.frame_sem,)
+        m, ev, st, pc, inq, at = build(args.snapshot, syx=args.syx, **_flags)
+    else:
+        m, ev, st, pc, inq, at = build(
+            args.snapshot, syx=args.syx, sdgate=True, esdhc=True,
+            deferred_components=('timers',))
 
     intro = intro_running(m, profile.intro_pit3_isr)
     pits = ev['restore_checkpoint_timers']()

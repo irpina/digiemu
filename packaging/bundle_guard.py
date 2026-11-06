@@ -99,6 +99,7 @@ PRIVATE_MODULES = (
 APP_MODULES = (
     'emu.portable', 'emu.bootstrap', 'emu.release', 'emu.dtpanel', 'emu.gui',
     'emu.dnpanel', 'emu.dsplink', 'emu.mdpanel', 'emu.modelboard', 'emu.i2c',
+    'emu.synpanel', 'emu.synboard', 'emu.edma_sw',
     'emu.ekfsformat', 'emu.uiresume', 'emu.checkpoint', 'emu.extract',
     'emu.snapshot', 'emu.checkpointver', 'emu.sparse', 'emu.samples', 'emu.esdhc',
     'emu.run', 'emu.config',
