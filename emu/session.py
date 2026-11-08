@@ -134,6 +134,9 @@ class Session:
             deferred_components=('timers',), fast_idle=fast_idle,
             manifest_relax=relax, ddr=ddr, **audio_kw)
         self.m, self.ev, self.st, self.pc, self.at = m, ev, st, pc, at
+        # As the window: once MIDI wakes the MIDI task, its semaphore must
+        # stop being faked or the task spins and starves the UI.
+        longrun.never_fake_set_posts(m, ev, prof.set_post)
 
         pits = None
         restore = ev.get('restore_checkpoint_timers')
