@@ -90,5 +90,50 @@ class DigitoneInquiryTest(unittest.TestCase):
         self.assertTrue(out.endswith(b'\xf7'), out.hex())
 
 
+DT_FOLDER = os.environ.get('DT2_DIGITAKT_FOLDER')
+
+
+@unittest.skipUnless(
+    os.environ.get('DT2_SESSION_MIDI_REAL') == '1' and DT_FOLDER,
+    'set DT2_SESSION_MIDI_REAL=1 and DT2_DIGITAKT_FOLDER to a Digitakt '
+    'firmware folder digiemu has set up',
+)
+class DigitaktKeysAfterMidiTest(unittest.TestCase):
+    """The MIDI task's semaphore is posted through set-post, which unblock
+    kept faking (longrun.never_fake_set_posts): after one message the task
+    spun and the UI stopped answering keys."""
+
+    def test_keys_still_draw_after_a_cc(self):
+        from emu import bootstrap, midi, portable
+        with open(os.path.join(DT_FOLDER, 'firmware.json')) as fh:
+            name = json.load(fh)['release']['syx_name']
+        paths = bootstrap.FirmwarePaths(root=DT_FOLDER, syx_name=name,
+                                        devices_dir=portable.devices_dir())
+        with mock.patch.dict(os.environ, paths.env()):
+            s = session.Session(paths.gui, paths.syx)
+            try:
+                midi_in = midi.MidiIn()
+                midi_in.put(bytes.fromhex('b00940'))   # CC 9 = 64, channel 1
+                for _ in range(500):
+                    if midi_in.delivered == 3:
+                        break
+                    midi_in.deliver(s.m)
+                    s.run_ms(1)
+                s.run_ms(300)
+                n = len(s.frames)
+                # FUNC+SRC opens the machine menu, NO closes it.
+                s.press(s.code('FUNC'))
+                s.run_ms(60)
+                s.tap(s.code('SRC'))
+                s.release(s.code('FUNC'))
+                s.run_ms(300)
+                s.tap(s.code('NO'))
+                self.assertIsNone(s.halted)
+            finally:
+                s.close()
+        self.assertEqual(midi_in.delivered, 3)
+        self.assertGreater(len(s.frames), n)
+
+
 if __name__ == '__main__':
     unittest.main()
